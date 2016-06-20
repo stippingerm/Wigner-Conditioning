@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import warnings
 
 # Set event lengths
+phases=['Ready','CS','Trace','US','End']
 durations=np.array([0,10,20,15,5])
 events=np.cumsum(durations)
 
@@ -20,6 +21,10 @@ dtformat = '%Y-%m-%d-%Hh%Mm%Ss'
 sessionbreak = np.timedelta64(8,'h')
 
 epochs = pd.CategoricalIndex(['Pre-Learning', 'Learning', 'Post-Learning'], ordered=True)
+
+display_learning = ['learning_epoch','context','puffed','port']
+sort_learning = ['learning_epoch','context','port','puffed']
+sort_context = ['context','learning_epoch','port','puffed']
 
 def df_epoch(df):
     '''Order DataFrame by epochs (epoch must be [first] index)'''
@@ -76,12 +81,18 @@ def load_files(mydir):
     data = Bunch()
     data.experiment_traits = __format_experiment_traits(
         pd.read_hdf(os.path.join(mydir,'experiment_traits.h5'),key='table'))
+    # Raw Ca-signal
     data.raw = pd.read_hdf(os.path.join(mydir,'raw_data.h5'),key='table').sort_index()
-    data.raw.columns = pd.Index(data.raw.columns.values, name='frame')
+    data.raw.columns = pd.Index(data.raw.columns.values.astype(int), name='frame')
+    # Filtered Ca-signal
     data.filtered = pd.read_hdf(os.path.join(mydir,'df_data.h5'),key='table').sort_index()
-    data.filtered.columns = pd.Index(data.filtered.columns.values, name='frame')
+    data.filtered.columns = pd.Index(data.filtered.columns.values.astype(int), name='frame')
+    # Spike-sorted
     data.transients = pd.read_hdf(os.path.join(mydir,'transients_data.h5'),key='table')
+    # Licking behavior
     data.behavior = pd.read_hdf(os.path.join(mydir,'behavior_data.h5'),key='table')
+    data.behavior.index.name='time'
+    # Additional parameters (?)
     data.fluor = __load_fluor(mydir)
     
     # Add metadata
@@ -89,6 +100,8 @@ def load_files(mydir):
     data.FPS = np.floor(data.max_nframe/60.)
     if data.FPS not in [8, 30]:
         warnings.warn('FPS might be wrong.')
+    data.events = events
+    data.event_frames = events*data.FPS
     data.trials = data.raw.index.levels[0]
     data.rois = data.raw.index.levels[1]
     data.mirow = pd.MultiIndex.from_product(
@@ -262,7 +275,7 @@ def plot_activity(df, et, FPS, grp = ['context','learning_epoch','port','puffed'
 def plot_data(df_spike, df_data, df_lick, et, FPS, grps = [[]], title='', div=None):
     ncol = len(grps)
     nrow = 3 if df_lick is None else 4
-    fig, ax = plt.subplots(nrow, ncol, figsize=(6*ncol,13), sharex=True, squeeze=False)
+    fig, ax = plt.subplots(nrow, ncol, figsize=(6*ncol,1+3*nrow), sharex=True, squeeze=False)
     fig.tight_layout(pad=3, h_pad=3)
     if len(title):
         fig.suptitle(title, fontsize=16)
@@ -285,7 +298,7 @@ def plot_data(df_spike, df_data, df_lick, et, FPS, grps = [[]], title='', div=No
 def plot_epochs(df_spike, df_data, df_lick, et, etc, FPS, grps = [[]], title='', div=None):
     ncol = len(epochs)
     nrow = 3 if df_lick is None else 4
-    fig, ax = plt.subplots(nrow, ncol, figsize=(6*ncol,13), sharex=True, squeeze=False)
+    fig, ax = plt.subplots(nrow, ncol, figsize=(6*ncol,1+3*nrow), sharex=True, squeeze=False)
     fig.tight_layout(pad=3, h_pad=3)
     if len(title):
         fig.suptitle(title, fontsize=16)
