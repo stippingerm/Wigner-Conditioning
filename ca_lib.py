@@ -74,6 +74,15 @@ def __load_fluor(mydir):
     return ret
         
 
+def __create_mask(df, index=None, columns=None, threshold=0.9):
+    time_mask = df.reset_index().groupby(['time']).count()
+    time_mask = time_mask.drop(['roi_id'],axis=1).subtract(threshold*time_mask['roi_id'],axis=0)<0
+    roi_mask = df.reset_index().groupby(['roi_id']).count()
+    roi_mask = roi_mask.drop(['time'],axis=1).subtract(threshold*roi_mask['time'],axis=0)<0
+    time_roi_mask = df*0.0
+    time_roi_mask = time_roi_mask.reindex(index=index, columns=columns)
+    return time_mask, roi_mask, time_roi_mask
+
 def load_files(mydir):
     '''Load files of the Losonczi group'''
 
@@ -110,6 +119,7 @@ def load_files(mydir):
                 ('Spiking',np.array(range(0,data.max_nframe))),names=('','frame'))
     data.icol = pd.Index(np.array(range(0,data.max_nframe)),name='frame')
     
+    data.time_mask, data.roi_mask, data.time_roi_mask = __create_mask(data.raw, data.mirow, data.icol)
     return data
 
 
