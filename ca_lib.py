@@ -14,7 +14,7 @@ import warnings
 # Set event lengths
 phases=['Ready','CS','Trace','US','End']
 durations=np.array([0,10,20,15,5])
-events=np.cumsum(durations)
+events=np.cumsum(durations).astype(int)
 
 # Set date formate
 dtformat = '%Y-%m-%d-%Hh%Mm%Ss'
@@ -106,7 +106,7 @@ def load_files(mydir):
     
     # Add metadata
     data.max_nframe = data.raw.shape[1]
-    data.FPS = np.floor(data.max_nframe/60.)
+    data.FPS = int(np.floor(data.max_nframe/60.))
     if data.FPS not in [8, 30]:
         warnings.warn('FPS might be wrong.')
     data.events = events
