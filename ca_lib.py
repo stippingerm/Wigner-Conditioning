@@ -332,3 +332,145 @@ def plot_epochs(df_spike, df_data, df_lick, et, etc, FPS, grps = [[]], title='',
         warnings.simplefilter('ignore', UserWarning)
         #fig.show()
         return fig
+        
+        
+def draw_transients(ax, transients, experiment_id, FPS, roi_df):
+    '''Plot transients with colored line and put a tic at the maxima'''
+    import matplotlib
+    ncolors = 10
+    # Plot all neural units in this experiment
+    try:
+        firing = transients.loc[experiment_id,['start_frame', 'stop_frame', 'max_frame']].join(roi_df.set_index(['roi_id']), how='left')
+        # Reshape things so that we have a sequence of:
+        # [[(x0,y0),(x1,y1)],[(x0,y0),(x1,y1)],...]
+        # based on http://stackoverflow.com/questions/17240694/python-how-to-plot-one-line-in-different-colors
+        segments = firing[['start_frame', 'idx', 'stop_frame', 'idx']].values.reshape(-1,2,2)
+        coll = matplotlib.collections.LineCollection(segments, cmap=plt.cm.rainbow)
+        coll.set_array(firing['idx']%ncolors)
+        if len(firing):
+            #ax.plot(firing[['start_frame', 'stop_frame']].T,firing[['idx', 'idx']].T,c=colors[firing['idx']])
+            ax.add_collection(coll)
+            ax.autoscale_view()
+        if len(firing):
+            ax.plot(firing['max_frame'].T,firing['idx'].T,'|',ms=5,c='k',label='spikes')
+            #xlim, ylim = ax.get_xlim(), ax.get_ylim()
+            #ax.scatter(firing['max_frame'].T,firing['idx'].T,s=5,c='k',marker='|')
+            #ax.set_xlim(xlim), ax.set_ylim(ylim)
+    except:
+        pass
+    for i in range(0,len(events)):
+        ax.axvline(x=events[i]*FPS, ymin=0.0, ymax = 1.0, linewidth=1, color='k')
+    ax.set_title('Transient peaks and durations ExID: '+experiment_id)
+    ax.set_xlabel('Camera frame')
+    ax.set_ylabel('Unit ID')
+
+def draw_levels(ax, data, experiment_id, FPS, roi_df, zoom=0.5, dist=1.0):
+    '''Plot transients with colored line and put a tic at the maxima'''
+    # Plot all neural units in this experiment
+    try:
+        firing = (zoom*data.loc[experiment_id,:]).add(dist*roi_df.set_index(['roi_id']).loc[:,'idx'],axis=0)
+        if len(firing):
+            ax.plot(firing.T)#,c=colors)
+    except:
+        pass
+    for i in range(0,len(events)):
+        ax.axvline(x=events[i]*FPS, ymin=0.0, ymax = 1.0, linewidth=1, color='k')
+    ax.set_title('Transient peaks and durations ExID: '+experiment_id)
+    ax.set_xlabel('Camera frame')
+    ax.set_ylabel('Unit ID')
+    
+def draw_spiking_nan(ax, spiking, experiment_id, roi_df):
+    '''Mark unavailable data with a gray dot'''
+    # Plot all neural units in this experiment
+    try:
+        firing = spiking.loc[experiment_id,:].join(roi_df.set_index(['roi_id']), how='left')
+        firing.columns.name='frame'
+        firing = firing.set_index('idx').stack(dropna=False)
+        firing = firing[firing.isnull()]
+        firing = firing.reset_index()
+        if len(firing):
+            #ax.scatter(firing.loc[:,'frame'],firing.loc[:,'idx'],s=1,c='lightgray',marker='.',label='missing')
+            ax.plot(firing.loc[:,'frame'],firing.loc[:,'idx'],'.',ms=1,c='lightgray',label='missing')
+    except:
+        pass
+    
+def draw_conditions(ax, conditions, experiment_id, FPS, height=20, loc='lower center', screen_width=1.0, fontsize=24, cw=None):
+    '''Draw a table and write experimental conditions into it'''
+    import matplotlib
+    a = conditions.loc[[experiment_id],['learning_epoch','context','port','puffed','session_num','day_num']]
+    if cw is None:
+        cw = np.concatenate((durations[1:]*FPS,np.array([0.5,0.5])*(ax.get_xlim()[1]-events[-1]*FPS)))
+
+    c = a.copy()
+    c.loc[:,:]='lightblue' if any(a['port'].isin(['W+',True])) else 'white'
+    replacement = [('context', 'CS-', 'lightgreen'), ('context', 'CS+', 'lightcoral'),
+                   ('context', 'Baseline', 'lightblue'),
+                   ('port', 'W+', 'lightblue'), ('puffed', 'A+', 'yellow'),
+                   ('port', True, 'lightblue'), ('puffed', True, 'yellow')]
+    for label, value, color in replacement:
+        c.loc[a[label]==value,label]=color
+    
+    ylim = ax.get_ylim()
+    #tab = pd.tools.plotting.table(ax, a, loc='lower center', fontsize=24, colWidths=cw/np.sum(cw))
+    tab = matplotlib.table.table(ax, cellText=a.values,
+                                   #rowLabels=rowLabels, colLabels=colLabels,
+                            loc=loc, fontsize=24, colWidths=cw/np.sum(cw), bbox=[0,0,screen_width,height/(ylim[1]-ylim[0])], cellLoc='center', cellColours=c.values)
+    # fontsize keyword is accepted but seems ineffective
+    #tab.set_fontsize(fontsize)
+    for key, cell in tab.get_celld().items():
+        cell.set_linewidth(0)
+        cell.set_fontsize(fontsize)
+        
+        
+def draw_triggers(ax, triggers, experiment_id, pos=0, ls='x', c='b', ms=8):
+    '''Plot trigger events'''
+    try:
+        if type(triggers) is not list:
+            triggers=[triggers]
+        for i, trig in enumerate(triggers):
+            x = trig.loc[experiment_id].index.values
+            x = x.reshape((1,-1))
+            if x.shape[1]>0:
+                ls1 = ls[i] if type(ls) is list else ls
+                c1 = c[i] if type(c) is list else c
+                ms1 = ms[i] if type(ms) is list else ms
+                ax.plot(x, pos, ls1, c=c1, ms=ms1)
+    except:
+        pass
+    
+def draw_behavior(ax, licks, experiment_id, FPS):
+    '''Plot individual licks'''
+    try:
+        i=-5
+        licking = np.array(licks.loc[experiment_id,['start_time', 'stop_time']])*FPS
+        if len(licking):
+            ax.plot(licking.T,i*np.ones_like(licking.T),c='b')
+        licking = np.array(licks.loc[experiment_id,['start_time', 'stop_time']].mean(axis=1))*FPS
+        if len(licking):
+            ax.plot(licking,i*np.ones_like(licking),'o',ms=5,c='k')
+    except:
+        pass
+
+def draw_licking(ax, licking, experiment_id, pos=-20, zoom=1.0, c='b', threshold=None, label=None):
+    '''Plot licking rate'''
+    try:
+        ax.axhline(y=pos, xmin=0.0, xmax = 1.0, linewidth=1, color='k')
+        if threshold is not None:
+            ax.axhline(y=threshold*zoom+pos,c='lightgray')
+        licking = licking.loc[experiment_id,:].values
+        if len(licking):
+            ax.plot(licking*zoom+pos,c=c,label=label)
+    except:
+        pass
+
+def draw_population(ax, data, experiment_id, pos=-20, zoom=10.0, c='r', threshold=None, label=None):
+    '''Plot population activity'''
+    try:
+        ax.axhline(y=pos, xmin=0.0, xmax = 1.0, linewidth=1, color='k')
+        if threshold is not None:
+            ax.axhline(y=threshold*zoom+pos,c='lightgray')
+        data = data.loc[experiment_id,:].mean(axis=0)
+        if len(data):
+            ax.plot(data*zoom+pos,c=c,label=label)
+    except:
+        pass
