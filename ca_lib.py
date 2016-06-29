@@ -42,6 +42,23 @@ class Bunch:
         return self.__dict__.__repr__()
     def __str__(self):
         return self.__dict__.__str__()
+        
+def test_hdf(filename):
+    try:
+        if os.path.isfile(filename):
+            with pd.HDFStore(filename, mode='r') as file:
+                pass
+            return True
+        else:
+            return False
+    except:
+        try:
+            os.remove(filename)
+            warnings.warn('Corrupted file found, deleted.')
+        except:
+            raise FileExistsError('File is already open.')
+        return False
+        
 
 def __format_experiment_traits(df):
     '''Clarify traits'''
@@ -108,11 +125,13 @@ def load_files(mydir):
     data.max_nframe = data.raw.shape[1]
     data.FPS = int(np.floor(data.max_nframe/60.))
     if data.FPS not in [8, 30]:
-        warnings.warn('FPS might be wrong.')
+        warnings.warn('FPS guess might be wrong.')
     data.events = events
     data.event_frames = events*data.FPS
     data.trials = data.raw.index.levels[0]
     data.rois = data.raw.index.levels[1]
+    data.roi_df = pd.DataFrame(data.rois, columns=['roi_id']
+                    ).reset_index().rename(columns={'index':'idx'})
     data.mirow = pd.MultiIndex.from_product(
                 (data.trials.values,data.rois.values),names=('time','roi_id'))
     data.micol = pd.MultiIndex.from_product(
@@ -203,7 +222,7 @@ def pd_aggr_col(df, pd_func, sections, names):
 ### Plotting ###
     
 def plot_activity(df, et, FPS, grp = ['context','learning_epoch','port','puffed'],
-                  name = 'Population activity (spiking)', ax = None, div=None):
+                  name = 'Population activity (spiking)', ax = None, div=None, fill=None, alpha=0.05):
     # NOTE: session_num is a string object therefore it is not included in the summation or averaging at the aggregation step of groupby
     # but the traits port and puffed are boolean and kept if uniform, so we get rid of them by conforming to the original index
     from matplotlib.font_manager import FontProperties
@@ -213,21 +232,49 @@ def plot_activity(df, et, FPS, grp = ['context','learning_epoch','port','puffed'
         fig = plt.figure()
         ax = fig.gca()
     if len(grp):
-        res = df.join(et,how='left').groupby(grp).mean().reindex(columns=df.columns)
+        gb = df.join(et,how='left').groupby(grp)
+        res = gb.mean().reindex(columns=df.columns)
+        try:
+            std = gb.std().reindex(columns=df.columns)
+        except:
+            #C:\Program Files\Anaconda3\envs\py27\lib\site-packages\pandas\core\groupby.py in std(self, ddof)
+            #   979         # todo, implement at cython level?
+            #-->980         return np.sqrt(self.var(ddof=ddof))
+            #AttributeError: 'float' object has no attribute 'sqrt'
+            std = 0
         count = df[[]].reset_index().drop_duplicates(['time']).set_index(['time']).join(et,how='left').groupby(grp).count()
         if (count.ndim>1):
             count = count.ix[:,0]
         for i in range(0,len(res)):
-            if div is None:
-                ax.plot(res.values[i],label=('%s: %d'%(res.index.values[i],count.values[i])))
-            else:
-                ax.plot(div,res.values[i],label=('%s: %d'%(res.index.values[i],count.values[i])))
+            val = res.values[i]
+            try:
+                err = std.values[i]
+            except:
+                # Same mysterious error
+                err = 0
+            pos = np.arange(0,len(val)) if div is None else div
+            cnt = count.values[i]
+            if fill=='std':
+                f1 = ax.fill_between(pos, val-err, val+err, alpha=alpha, interpolate=False, edgecolor=None)
+            elif fill=='err':
+                f1 = ax.fill_between(pos, val-err/np.sqrt(cnt), val+err/np.sqrt(cnt), alpha=alpha, interpolate=False, edgecolor=None)
+            l1 = ax.plot(pos, val, label=('%s: %d'%(res.index.values[i],cnt)))
+            if fill is not None:
+                f1.set_facecolors(l1[0].get_color())
+                f1.set_edgecolors('none')
     else:
         res = df.mean(axis=0)
-        if div is None:
-            ax.plot(res.values,label='whole popuation')
-        else:
-            ax.plot(div,res.values,label='whole popuation')
+        val = res.values
+        std = df.std(axis=0).values
+        pos = np.arange(0,len(res)) if div is None else div
+        if fill=='std':
+            f1 = ax.fill_between(pos, val-err, val+err, alpha=alpha, interpolate=False, edgecolor=None)
+        elif fill=='err':
+            f1 = ax.fill_between(pos, val-err/np.sqrt(cnt), val+err/np.sqrt(cnt), alpha=alpha, interpolate=False, edgecolor=None)
+        ax.plot(pos,res.values,label='whole popuation')
+        if fill is not None:
+            f1.set_facecolors(l1[0].get_color())
+            f1.set_edgecolors('none')
     q = res.values.ravel()
     q = q[np.isfinite(q)]
     q = np.percentile(q[np.isfinite(q)],[1,99]) if len(q)>2 else np.array([0,1])
@@ -282,7 +329,7 @@ def plot_activity(df, et, FPS, grp = ['context','learning_epoch','port','puffed'
 #         warnings.simplefilter('ignore', UserWarning)
 #         fig.show()
         
-def plot_data(df_spike, df_data, df_lick, et, FPS, grps = [[]], title='', div=None):
+def plot_data(df_spike, df_data, df_lick, et, FPS, grps = [[]], title='', div=None, fill=None):
     ncol = len(grps)
     nrow = 3 if df_lick is None else 4
     fig, ax = plt.subplots(nrow, ncol, figsize=(6*ncol,1+3*nrow), sharex=True, squeeze=False)
@@ -291,21 +338,21 @@ def plot_data(df_spike, df_data, df_lick, et, FPS, grps = [[]], title='', div=No
         fig.suptitle(title, fontsize=16)
     for i in range(0, ncol):
         ax[0,i].axis('off')
-        plot_activity(df_spike, et, FPS, grps[i], "Spiking", ax=ax[1,i],div=div)
+        plot_activity(df_spike, et, FPS, grps[i], "Spiking", ax=ax[1,i],div=div,fill=fill)
         leg = ax[1,i].legend(loc='lower center', bbox_to_anchor=(0.5, 1.1), title=', '.join(grps[i]))
         leg.get_title().set_fontsize('large')
         leg.get_title().set_fontweight('bold')
-        plot_activity(df_data, et, FPS, grps[i], "Ca-level", ax=ax[2,i],div=div)
+        plot_activity(df_data, et, FPS, grps[i], "Ca-level", ax=ax[2,i],div=div,fill=fill)
         #ax[2,i].legend_.remove()
         if df_lick is not None:
-            plot_activity(df_lick, et, FPS, grps[i], "Licking", ax=ax[3,i],div=div)
+            plot_activity(df_lick, et, FPS, grps[i], "Licking", ax=ax[3,i],div=div,fill=fill)
             #ax[3,i].legend_.remove()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
         #fig.show()
         return fig
         
-def plot_epochs(df_spike, df_data, df_lick, et, etc, FPS, grps = [[]], title='', div=None):
+def plot_epochs(df_spike, df_data, df_lick, et, etc, FPS, grps = [[]], title='', div=None, fill=None):
     ncol = len(epochs)
     nrow = 3 if df_lick is None else 4
     fig, ax = plt.subplots(nrow, ncol, figsize=(6*ncol,1+3*nrow), sharex=True, squeeze=False)
@@ -319,14 +366,14 @@ def plot_epochs(df_spike, df_data, df_lick, et, etc, FPS, grps = [[]], title='',
         sel = et.reset_index(drop=True).merge(keys, on=['context', 'port', 'puffed', 'learning_epoch'], how='inner')
         ax[0,i].set_title(epoch,y=0.8)
         ax[0,i].axis('off')
-        plot_activity(df_spike.reindex(sel.loc[:,'timestr'],level=0), et, FPS, grps[0],"Spiking",ax=ax[1,i],div=div)
+        plot_activity(df_spike.reindex(sel.loc[:,'timestr'],level=0), et, FPS, grps[0],"Spiking",ax=ax[1,i],div=div,fill=fill)
         leg = ax[1,i].legend(loc='lower center', bbox_to_anchor=(0.5, 1.1), title=', '.join(grps[0]))
         leg.get_title().set_fontsize('large')
         leg.get_title().set_fontweight('bold')
-        plot_activity(df_data.reindex(sel.loc[:,'timestr'],level=0), et, FPS, grps[0],"Ca-level",ax=ax[2,i],div=div)
+        plot_activity(df_data.reindex(sel.loc[:,'timestr'],level=0), et, FPS, grps[0],"Ca-level",ax=ax[2,i],div=div,fill=fill)
         #ax[2,i].legend_.remove()
         if df_lick is not None:
-            plot_activity(df_lick.reindex(sel.loc[:,'timestr'].rename('time')), et, FPS, grps[0],"Licking",ax=ax[3,i],div=div)
+            plot_activity(df_lick.reindex(sel.loc[:,'timestr'].rename('time')), et, FPS, grps[0],"Licking",ax=ax[3,i],div=div,fill=fill)
             #ax[3,i].legend_.remove()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
@@ -452,11 +499,16 @@ def draw_behavior(ax, licks, experiment_id, FPS):
         pass
 
 def draw_licking(ax, licking, experiment_id, pos=-20, zoom=1.0, c='b', threshold=None, label=None):
-    '''Plot licking rate'''
+    '''Plot licking rate or any other single time series'''
     try:
         ax.axhline(y=pos, xmin=0.0, xmax = 1.0, linewidth=1, color='k')
         if threshold is not None:
-            ax.axhline(y=threshold*zoom+pos,c='lightgray')
+            try:
+                threshold = [float(threshold)]
+            except:
+                pass
+            for thr in threshold:
+                ax.axhline(y=thr*zoom+pos,c='lightgray')
         licking = licking.loc[experiment_id,:].values
         if len(licking):
             ax.plot(licking*zoom+pos,c=c,label=label)
@@ -464,11 +516,16 @@ def draw_licking(ax, licking, experiment_id, pos=-20, zoom=1.0, c='b', threshold
         pass
 
 def draw_population(ax, data, experiment_id, pos=-20, zoom=10.0, c='r', threshold=None, label=None):
-    '''Plot population activity'''
+    '''Plot population activity from individual signals'''
     try:
         ax.axhline(y=pos, xmin=0.0, xmax = 1.0, linewidth=1, color='k')
         if threshold is not None:
-            ax.axhline(y=threshold*zoom+pos,c='lightgray')
+            try:
+                threshold = [float(threshold)]
+            except:
+                pass
+            for thr in threshold:
+                ax.axhline(y=thr*zoom+pos,c='lightgray')
         data = data.loc[experiment_id,:].mean(axis=0)
         if len(data):
             ax.plot(data*zoom+pos,c=c,label=label)
