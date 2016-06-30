@@ -13,6 +13,7 @@ import warnings
 
 # Set event lengths
 phases=['Ready','CS','Trace','US','End']
+phase_lookup={'Ready':0,'CS':1,'Trace':2,'US':3,'End':4}
 durations=np.array([0,10,20,15,5])
 events=np.cumsum(durations).astype(int)
 
@@ -64,11 +65,12 @@ def __format_experiment_traits(df):
     '''Clarify traits'''
     from datetime import datetime as dt
     et = df.rename(columns={'licking':'port','time':'timestr'})
+    et['context'] = et['context'].replace('baseline','Baseline')
     et['port'] = et['port'].apply(lambda x: 'W+' if x else 'W-')
     et['puffed'] = et['puffed'].apply(lambda x: 'A+' if x else 'A-')
     et['session_num'] = et['session_num'].astype(int)
-    et['time'] = et['timestr'].apply(lambda t: dt.strptime(t, dtformat))
-    leapaday = (et['time'].values[1:]-et['time'].values[:-1]) > sessionbreak
+    et['datetime'] = et['timestr'].apply(lambda t: dt.strptime(t, dtformat))
+    leapaday = (et['datetime'].values[1:]-et['datetime'].values[:-1]) > sessionbreak
     et['day_leap'] = np.append([True],leapaday)
     et['day_num'] = np.cumsum(np.append([0],leapaday.astype(int)))
     return et
@@ -92,11 +94,20 @@ def __load_fluor(mydir):
         
 
 def __create_mask(df, index=None, columns=None, threshold=0.9):
+    '''Provide summary on data availability'''
+    # How many ROIs are present in the given camera frame of a trial
     time_mask = df.reset_index().groupby(['time']).count()
+    # Set True where at least 90% are present
+    # NOTE: we mean 90% of ROIs that were not entirely silent in the trial
     time_mask = time_mask.drop(['roi_id'],axis=1).subtract(threshold*time_mask['roi_id'],axis=0)<0
+    # In how many trials is the ROI present in the given camera frame
     roi_mask = df.reset_index().groupby(['roi_id']).count()
+    # Set True those that are present in at least 90%
+    # NOTE: we mean 90% of trials where the ROI was not entirely silent
     roi_mask = roi_mask.drop(['time'],axis=1).subtract(threshold*roi_mask['time'],axis=0)<0
+    # Set all numeric entries to 0 (keep NaNs)
     time_roi_mask = df*0.0
+    # Add all missing combinations with NaNs
     time_roi_mask = time_roi_mask.reindex(index=index, columns=columns)
     return time_mask, roi_mask, time_roi_mask
 
@@ -126,7 +137,6 @@ def load_files(mydir):
     data.FPS = int(np.floor(data.max_nframe/60.))
     if data.FPS not in [8, 30]:
         warnings.warn('FPS guess might be wrong.')
-    data.events = events
     data.event_frames = events*data.FPS
     data.trials = data.raw.index.levels[0]
     data.rois = data.raw.index.levels[1]
