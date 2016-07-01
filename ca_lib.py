@@ -16,12 +16,19 @@ phases=['Ready','CS','Trace','US','End']
 phase_lookup={'Ready':0,'CS':1,'Trace':2,'US':3,'End':4}
 durations=np.array([0,10,20,15,5])
 events=np.cumsum(durations).astype(int)
+legal_conditions=[('Baseline','W+','A-'),
+                  ('CS+','W+','A+'),('CS+','W+','A-'),
+                  ('CS+','W-','A+'),('CS+','W-','A-'),
+                  ('CS-','W+','A-'),('CS-','W-','A-')]
 
 # Set date formate
 dtformat = '%Y-%m-%d-%Hh%Mm%Ss'
 sessionbreak = np.timedelta64(8,'h')
 
 epochs = pd.CategoricalIndex(['Pre-Learning', 'Learning', 'Post-Learning'], ordered=True)
+contexts = pd.CategoricalIndex(['Baseline', 'CS+', 'CS-'], ordered=True)
+port = pd.CategoricalIndex(['W+', 'W-'], ordered=True)
+puff = pd.CategoricalIndex(['A+', 'A-'], ordered=True)
 
 display_learning = ['learning_epoch','context','puffed','port']
 sort_learning = ['learning_epoch','context','port','puffed']
