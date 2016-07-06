@@ -16,10 +16,20 @@ phases=['Ready','CS','Trace','US','End']
 phase_lookup={'Ready':0,'CS':1,'Trace':2,'US':3,'End':4}
 durations=np.array([0,10,20,15,5])
 events=np.cumsum(durations).astype(int)
-legal_conditions=[('Baseline','W+','A-'),
-                  ('CS+','W+','A+'),('CS+','W+','A-'),
-                  ('CS+','W-','A+'),('CS+','W-','A-'),
-                  ('CS-','W+','A-'),('CS-','W-','A-')]
+
+legal_conditions=pd.MultiIndex.from_tuples([('Baseline','W+','A-'),
+                              ('CS+','W+','A+'),('CS+','W+','A-'),
+                              ('CS+','W-','A+'),('CS+','W-','A-'),
+                              ('CS-','W+','A-'),('CS-','W-','A-')],
+                              names=['context','port','puffed'])
+legal_colors = ['y', 'magenta','purple','red','maroon','cyan','lime']
+
+short_conditions=pd.MultiIndex.from_tuples([('Baseline','W+'),
+                              ('CS+','W+'), ('CS+','W-'),
+                              ('CS-','W+'), ('CS-','W-')],
+                              names=['context','port'])
+short_colors = ['y', 'magenta','red','cyan','lime']
+
 
 # Set date formate
 dtformat = '%Y-%m-%d-%Hh%Mm%Ss'
@@ -54,7 +64,7 @@ class Bunch:
 def test_hdf(filename):
     try:
         if os.path.isfile(filename):
-            with pd.HDFStore(filename, mode='r') as file:
+            with pd.HDFStore(filename, mode='r'):
                 pass
             return True
         else:
@@ -235,6 +245,147 @@ def pd_aggr_col(df, pd_func, sections, names):
     ret = pd.concat(ser, axis=1)
     return ret
 
+
+def peri_event_avg(data, triggers, diameter=(-10, 10), allow=None, disable=None):
+    '''Collect data in windows arond events in an event list'''
+    window = np.arange(diameter[0],diameter[1])
+    count=0
+    ret = []
+    for idx, weight in triggers.iteritems():
+        experiment_id, frame = idx
+        if (experiment_id in data.index) and ((allow is None) or (idx in allow)) and ((disable is None) or (idx not in disable)):
+            tmp = data.loc[experiment_id,:].reindex(columns=frame+window)
+            tmp.columns = pd.MultiIndex.from_product([count,window],names=['id','frame'])
+            ret.append(tmp)
+            count += 1
+    if len(ret):
+        ret = pd.concat(ret,axis=1)
+        return ret, count
+    else:
+        return None, count
+        
+def get_gauss_window(time_range, rate):
+    '''Gaussian window'''
+    rate = float(rate)
+    if type(time_range) is int:
+        time_points = np.arange(0,time_range)-0.5*time_range
+    elif len(time_range)==2:
+        time_points = np.arange(time_range[0],time_range[-1])
+    else:
+        time_points = time_range
+    decay = np.exp(-np.power(rate*time_points,2)/2.0)
+    return decay/np.sum(decay)
+    
+def get_decay(time_range, rate):
+    '''Exponentially decaying series'''
+    rate = float(rate)
+    if type(time_range) is int:
+        time_points = np.arange(0,time_range)-0.5*time_range
+    elif len(time_range)==2:
+        time_points = np.arange(time_range[0],time_range[-1])
+    else:
+        time_points = time_range
+    decay = np.exp(-np.abs(rate*time_points))
+    return decay/np.sum(decay)
+    
+def rev_align(data, shape):
+    '''Align for broadcast to shape matching axes from the beginning (opposed to numpy convention)'''
+    data_dim = data.ndim
+    req_dim = len(shape)
+    new_axes = np.arange(data_dim,req_dim)
+    # TODO: using np.reshape is more efficient
+    ret = data
+    for axis in new_axes:
+        ret = np.expand_dims(data, axis=axis)
+    return ret
+    
+def rev_broadcast(data, shape):
+    '''Broadcast to shape matching axes from the beginning (opposed to numpy convention)'''
+    ret = np.broadcast_to(rev_align(data,shape), shape)
+    return ret
+    
+    
+### Pattern atching ###
+    
+def match_pattern(data, pattern, std, decay, noise_level=0.01, detailed=False):
+    '''Match pattern with decaying strength along time axis (rows). Use any number of columns.
+    Pattern and std may be one (time points given, all columns equal) or two dimensional (matrix given).
+    Noise_level can be 0 to 2 dimensional, if it is one dimensional then it is understood
+    on the category axis (all rows equal), noise_level must be positive if there is any std==0.'''
+    diff = data-rev_align(pattern, data.shape)
+    scale = rev_align(decay, data.shape)/(noise_level+rev_align(std, data.shape))
+    ret = np.nanmean(np.abs(diff*scale), axis=(0 if detailed else None))
+    return -ret
+    
+def correlate_pattern(data, pattern, std, decay, noise_level=0.01, detailed=False):
+    '''Multiply pattern with decaying strength along time axis (rows). Use any number of columns.
+    Pattern and std may be one (time points given, all columns equal) or two dimensional (matrix given).
+    Noise_level can be 0 to 2 dimensional, if it is one dimensional then it is understood
+    on the category axis (all rows equal), noise_level must be positive if there is any std==0.'''
+    # Note: this is not real correlation unless input is normalized
+    corr = data*rev_align(pattern, data.shape)
+    scale = rev_align(decay, data.shape)/(noise_level+rev_align(std, data.shape))
+    ret = np.nanmean((corr*scale), axis=(0 if detailed else None))
+    return ret
+    
+def rolling2D(df, func, window, min_periods=None, center=True):
+    '''Slice a DataFrame along index (rows) to apply 2D function'''
+    # This was a missing feature in pandas: one could previously correlate a single pattern
+    # along a selected axis of a 2D DataFrame.
+    window = int(window)
+    if window<1:
+        raise ValueError('window needs positive length')
+    if min_periods is None:
+        min_periods = window
+    else:
+        min_periods = int(min_periods)
+    if min_periods<1:
+        raise ValueError('min_periods needs to be positive')
+    start = min_periods-window # first point of first window is start, available points evaluate to [0, min_periods)
+    end = len(df)-min_periods # first point of last window is end, available points evaluate to [len-min_periods, len)
+    if center:
+        shift = int(np.floor(window/2))
+    else:
+        shift = 0
+    first = start
+    data = df.iloc[first:first+window,:]
+    tmp = func(data)
+    try:
+        if len(tmp)==len(df.columns):
+            ret = pd.DataFrame([], index=df.index, columns=df.columns)
+        else:
+            ret = pd.DataFrame([], index=df.index, columns=pd.Index(np.arange(0,len(tmp))))
+    except:
+        ret = pd.DataFrame([], index=df.index, columns=pd.Index([0]))
+    ret.iloc[first+shift,:]=tmp
+    for first in range(start+1,end+1):
+        data = df.iloc[first:first+window,:]
+        tmp = func(data)
+        ret.iloc[first+shift,:]=tmp
+    return ret
+    
+# Fine-tuned version of method3
+def search_pattern(df, triggers, trials, FPS, diam = (-3,3), decay_time=0.1, trigger_allow=None, trigger_disable=None, method='correlate'):
+    ret = []
+    diam = int(FPS*diam[0]),int(FPS*diam[1])
+    window = diam[1]-diam[0]
+    decay = get_decay(window,1.0/(decay_time*FPS))
+    dd, c = peri_event_avg(df, triggers, diameter=diam, allow=trigger_allow, disable=trigger_disable)
+    p1 = dd.mean(axis=1, level=1).T.values
+    s1 = dd.std(axis=1, level=1).T.values
+    if method=='match':
+        func = (lambda x: match_pattern(x.values,p1,s1,decay=decay))
+    elif method=='correlate':
+        p1 = p1 - np.nanmean(p1)
+        func = (lambda x: correlate_pattern(x.values-x.mean().mean(),p1,s1,decay=decay))
+    else:
+        raise ValueError('Unaccepted method')
+    for trial in trials:
+        tmp = rolling2D(df.loc[trial,:].T,func,window,center=True).T
+        tmp.index=[trial]
+        ret.append(tmp)
+    ret = pd.concat(ret)
+    return ret.astype(float)
 
 ### Plotting ###
     
@@ -548,3 +699,5 @@ def draw_population(ax, data, experiment_id, pos=-20, zoom=10.0, c='r', threshol
             ax.plot(data*zoom+pos,c=c,label=label)
     except:
         pass
+    
+    
