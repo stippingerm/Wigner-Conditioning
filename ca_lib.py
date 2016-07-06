@@ -2,7 +2,7 @@
 """
 Created on Thu Jun 16 10:47:42 2016
 
-@author: Marcell
+@author: Stippinger Marcell
 """
 
 import os
@@ -11,8 +11,45 @@ import numpy as np
 import matplotlib.pyplot as plt
 import warnings
 
+
+### General access tools
+
+class Bunch:
+    '''Dot-access container'''
+    def __init__(self, **kw):
+        for name in kw:
+            setattr(self, name, kw[name])
+    def __repr__(self):
+        return self.__dict__.__repr__()
+    def __str__(self):
+        return self.__dict__.__str__()
+
+
+def test_hdf(filename):
+    '''Test if HDF file exists and is available for reading'''
+    try:
+        if os.path.isfile(filename):
+            with pd.HDFStore(filename, mode='r'):
+                pass
+            return True
+        else:
+            if os.path.isdir(filename):
+                raise FileExistsError('Path beongs to directory.')
+            else:
+                return False
+    except:
+        try:
+            os.remove(filename)
+            warnings.warn('Corrupted file found, deleted.')
+        except:
+            raise FileExistsError('File is already open.')
+        return False
+
+
+### Constants for Losonczi Lab protocol
+
 # Set event lengths
-phases=['Ready','CS','Trace','US','End']
+phases = ['Ready', 'CS', 'Trace', 'US', 'End']
 phase_lookup={'Ready':0,'CS':1,'Trace':2,'US':3,'End':4}
 durations=np.array([0,10,20,15,5])
 events=np.cumsum(durations).astype(int)
@@ -30,7 +67,6 @@ short_conditions=pd.MultiIndex.from_tuples([('Baseline','W+'),
                               names=['context','port'])
 short_colors = ['y', 'magenta','red','cyan','lime']
 
-
 # Set date formate
 dtformat = '%Y-%m-%d-%Hh%Mm%Ss'
 sessionbreak = np.timedelta64(8,'h')
@@ -44,42 +80,11 @@ display_learning = ['learning_epoch','context','puffed','port']
 sort_learning = ['learning_epoch','context','port','puffed']
 sort_context = ['context','learning_epoch','port','puffed']
 
-def df_epoch(df):
-    '''Order DataFrame by epochs (epoch must be [first] index)'''
-    ret = pd.DataFrame()
-    for col in epochs.values:
-        ret = ret.append(df.loc[[col],:])
-    return ret
-    
-class Bunch:
-    '''Dot-access container'''
-    def __init__(self, **kw):
-        for name in kw:
-            setattr(self, name, kw[name])
-    def __repr__(self):
-        return self.__dict__.__repr__()
-    def __str__(self):
-        return self.__dict__.__str__()
-        
-def test_hdf(filename):
-    try:
-        if os.path.isfile(filename):
-            with pd.HDFStore(filename, mode='r'):
-                pass
-            return True
-        else:
-            return False
-    except:
-        try:
-            os.remove(filename)
-            warnings.warn('Corrupted file found, deleted.')
-        except:
-            raise FileExistsError('File is already open.')
-        return False
-        
+
+### Input handling for Losonczi Lab protocol
 
 def __format_experiment_traits(df):
-    '''Clarify traits'''
+    '''Translate traits to human readable notation'''
     from datetime import datetime as dt
     et = df.rename(columns={'licking':'port','time':'timestr'})
     et['context'] = et['context'].replace('baseline','Baseline')
@@ -92,23 +97,23 @@ def __format_experiment_traits(df):
     et['day_num'] = np.cumsum(np.append([0],leapaday.astype(int)))
     return et
 
-def __load_fluor(mydir):    
+
+def __load_fluor(mydir):
     '''Load the undocumented dict called fluor'''
-    import pickle
-    
-    # Some undocumented info about the experiments
+    import pickle, sys
     pkl_file = open(os.path.join(mydir,'frame_fluor.pkl'), 'rb')
-    
-    # Python 2.7
-    ret = pickle.load(pkl_file)
-    
-    # Python 3.5
-    #u = pickle._Unpickler(pkl_file)
-    #u.encoding = 'latin1'
-    #ret = u.load()
-    
+
+    if sys.version_info >= (3,5):
+        # Python 3.5
+        u = pickle._Unpickler(pkl_file)
+        u.encoding = 'latin1'
+        ret = u.load()
+    else:
+        # Python 2.7
+        ret = pickle.load(pkl_file)
+
     return ret
-        
+
 
 def __create_mask(df, index=None, columns=None, threshold=0.9):
     '''Provide summary on data availability'''
@@ -127,6 +132,15 @@ def __create_mask(df, index=None, columns=None, threshold=0.9):
     # Add all missing combinations with NaNs
     time_roi_mask = time_roi_mask.reindex(index=index, columns=columns)
     return time_mask, roi_mask, time_roi_mask
+
+
+def df_epoch(df):
+    '''Order DataFrame by epochs (epoch must be [first] index)'''
+    ret = pd.DataFrame()
+    for col in epochs.values:
+        ret = ret.append(df.loc[[col],:])
+    return ret
+
 
 def load_files(mydir):
     '''Load files of the Losonczi group'''
@@ -148,7 +162,7 @@ def load_files(mydir):
     data.behavior.index.name='time'
     # Additional parameters (?)
     data.fluor = __load_fluor(mydir)
-    
+
     # Add metadata
     data.max_nframe = data.raw.shape[1]
     data.FPS = int(np.floor(data.max_nframe/60.))
@@ -164,7 +178,7 @@ def load_files(mydir):
     data.micol = pd.MultiIndex.from_product(
                 ('Spiking',np.array(range(0,data.max_nframe))),names=('','frame'))
     data.icol = pd.Index(np.array(range(0,data.max_nframe)),name='frame')
-    
+
     data.time_mask, data.roi_mask, data.time_roi_mask = __create_mask(data.raw, data.mirow, data.icol)
     return data
 
@@ -199,28 +213,21 @@ def pd_zscore_clip(df, clip_left=0, clip_right=-1, axis = 0):
         ret = df.apply(lambda x: nan_zscore_clip(x,clip_left,clip_right), axis=axis, raw=True)
     return ret
 
-#def pd_zscore_by_roi(df, clip_left=0, clip_right=-1, axis=None):
-#    '''z-score the rows of a special DataFrame with index (trial, roi)
-#       based on a column slice'''
-#    ret = df.reset_index().set_index(['roi_id','time'])
-#    trf = lambda x: nan_zscore_clip(x.T,clip_left,clip_right).T
-#    for roi in ret.index.levels[0]:
-#        ret.loc[roi,:] = trf(ret.loc[roi,:].as_matrix())
-#    return ret.reset_index().set_index(['time','roi_id'])
-    
 def pd_zscore_by_roi(df, clip_left=0, clip_right=-1, axis=None):
-    '''z-score the rows of a special DataFrame with index (trial, roi)
-       based on a column slice'''
+    '''z-score the rows of a special DataFrame with MultiIndex (trial, roi)
+       based on a slice of columns grouping by the roi level of the index'''
     mea = df.iloc[:,clip_left:clip_right].stack().mean(level=1)
     std = df.iloc[:,clip_left:clip_right].stack().std(level=1)
     ret = df.sub(mea, axis='rows', level=1).divide(std, axis='rows', level=1)
     return ret
-    
-
 
 
 ### data manipulation ###
-def func_over_intervals(func, intervals, data, axis=0):
+
+def func_over_intervals(func, intervals, data):
+    '''apply the same function to data blocks
+       selected by [slice intervals) on the first axis'''
+    axis=0
     shape = np.array(data.shape)
     n_ivs = len(intervals)-1
     shape[axis] = n_ivs
@@ -229,19 +236,15 @@ def func_over_intervals(func, intervals, data, axis=0):
         ret[i] = func(data[intervals[i]:intervals[i+1]])
     return tuple(ret)
 
-# def pd_aggr(df, func, colnames, axis=1, raw=True):
-#     with warnings.catch_warnings():
-#         warnings.simplefilter('ignore', RuntimeWarning)
-#         ret = df.apply(func, axis=axis, raw=raw)
-#         ret = pd.DataFrame(ret.tolist(), columns=colnames, index=ret.index)
-#     return ret
 
-def pd_aggr_col(df, pd_func, sections, names):
-    if (len(names)+1 != len(sections)):
+def pd_aggr_col(df, pd_func, intervals, names):
+    '''apply the same function to data blocks of DataFrame
+       selected by [slice intervals) on the second axis'''
+    if (len(names)+1 != len(intervals)):
         raise ValueError("sections and names are not matched")
     ser = [pd.DataFrame([], index=df.index)]
     for i in range(0,len(names)):
-        ser.append(pd_func(df.iloc[:,sections[i]:sections[i+1]], axis=1).to_frame(name=names[i]))
+        ser.append(pd_func(df.iloc[:,intervals[i]:intervals[i+1]], axis=1).to_frame(name=names[i]))
     ret = pd.concat(ser, axis=1)
     return ret
 
@@ -263,7 +266,8 @@ def peri_event_avg(data, triggers, diameter=(-10, 10), allow=None, disable=None)
         return ret, count
     else:
         return None, count
-        
+
+
 def get_gauss_window(time_range, rate):
     '''Gaussian window'''
     rate = float(rate)
@@ -275,7 +279,8 @@ def get_gauss_window(time_range, rate):
         time_points = time_range
     decay = np.exp(-np.power(rate*time_points,2)/2.0)
     return decay/np.sum(decay)
-    
+
+
 def get_decay(time_range, rate):
     '''Exponentially decaying series'''
     rate = float(rate)
@@ -287,7 +292,8 @@ def get_decay(time_range, rate):
         time_points = time_range
     decay = np.exp(-np.abs(rate*time_points))
     return decay/np.sum(decay)
-    
+
+
 def rev_align(data, shape):
     '''Align for broadcast to shape matching axes from the beginning (opposed to numpy convention)'''
     data_dim = data.ndim
@@ -298,15 +304,16 @@ def rev_align(data, shape):
     for axis in new_axes:
         ret = np.expand_dims(data, axis=axis)
     return ret
-    
+
+
 def rev_broadcast(data, shape):
     '''Broadcast to shape matching axes from the beginning (opposed to numpy convention)'''
     ret = np.broadcast_to(rev_align(data,shape), shape)
     return ret
-    
-    
+
+
 ### Pattern atching ###
-    
+
 def match_pattern(data, pattern, std, decay, noise_level=0.01, detailed=False):
     '''Match pattern with decaying strength along time axis (rows). Use any number of columns.
     Pattern and std may be one (time points given, all columns equal) or two dimensional (matrix given).
@@ -316,7 +323,8 @@ def match_pattern(data, pattern, std, decay, noise_level=0.01, detailed=False):
     scale = rev_align(decay, data.shape)/(noise_level+rev_align(std, data.shape))
     ret = np.nanmean(np.abs(diff*scale), axis=(0 if detailed else None))
     return -ret
-    
+
+
 def correlate_pattern(data, pattern, std, decay, noise_level=0.01, detailed=False):
     '''Multiply pattern with decaying strength along time axis (rows). Use any number of columns.
     Pattern and std may be one (time points given, all columns equal) or two dimensional (matrix given).
@@ -327,7 +335,8 @@ def correlate_pattern(data, pattern, std, decay, noise_level=0.01, detailed=Fals
     scale = rev_align(decay, data.shape)/(noise_level+rev_align(std, data.shape))
     ret = np.nanmean((corr*scale), axis=(0 if detailed else None))
     return ret
-    
+
+
 def rolling2D(df, func, window, min_periods=None, center=True):
     '''Slice a DataFrame along index (rows) to apply 2D function'''
     # This was a missing feature in pandas: one could previously correlate a single pattern
@@ -363,9 +372,11 @@ def rolling2D(df, func, window, min_periods=None, center=True):
         tmp = func(data)
         ret.iloc[first+shift,:]=tmp
     return ret
-    
-# Fine-tuned version of method3
+
+
 def search_pattern(df, triggers, trials, FPS, diam = (-3,3), decay_time=0.1, trigger_allow=None, trigger_disable=None, method='correlate'):
+    '''deduce peri-event pattern based on triggers and search for similarities
+       in the whole time series that is provided in (trial,roi) x (frames) format'''
     ret = []
     diam = int(FPS*diam[0]),int(FPS*diam[1])
     window = diam[1]-diam[0]
@@ -387,10 +398,12 @@ def search_pattern(df, triggers, trials, FPS, diam = (-3,3), decay_time=0.1, tri
     ret = pd.concat(ret)
     return ret.astype(float)
 
-### Plotting ###
-    
+
+### Plotting specific to Losonczi Lab data ###
+
 def plot_activity(df, et, FPS, grp = ['context','learning_epoch','port','puffed'],
                   name = 'Population activity (spiking)', ax = None, div=None, fill=None, alpha=0.05):
+    '''Perform grouping and plot data into one subplot'''
     # NOTE: session_num is a string object therefore it is not included in the summation or averaging at the aggregation step of groupby
     # but the traits port and puffed are boolean and kept if uniform, so we get rid of them by conforming to the original index
     from matplotlib.font_manager import FontProperties
@@ -410,7 +423,8 @@ def plot_activity(df, et, FPS, grp = ['context','learning_epoch','port','puffed'
             #-->980         return np.sqrt(self.var(ddof=ddof))
             #AttributeError: 'float' object has no attribute 'sqrt'
             std = 0
-        count = df[[]].reset_index().drop_duplicates(['time']).set_index(['time']).join(et,how='left').groupby(grp).count()
+        #count = df[[]].reset_index().drop_duplicates(['time']).set_index(['time']).join(et,how='left').groupby(grp).count()
+        count = et.reindex(pd.Index(df.index.get_level_values('time').unique(), name='time')).groupby(grp).count()
         if (count.ndim>1):
             count = count.ix[:,0]
         for i in range(0,len(res)):
@@ -456,10 +470,10 @@ def plot_activity(df, et, FPS, grp = ['context','learning_epoch','port','puffed'
     #leg.get_title().set_fontsize('large')
     #leg.get_title().set_fontweight('bold')
     #ax.show()
-    
-    
+
+
 # # Some experimenting
-# 
+#
 # def plot_data(df_spike, df_data, df_lick, grps = [[]], title=''):
 #     from mpl_toolkits.axes_grid1 import host_subplot, AxesGrid
 #     import mpl_toolkits.axisartist as AA
@@ -484,7 +498,7 @@ def plot_activity(df, et, FPS, grp = ['context','learning_epoch','port','puffed'
 #         ax[3,i] = host_subplot(4, ncol, i*ncol+4, axes_class=AA.Axes)
 #         plot_activity(df_lick,grps[i],"Licking",ax=ax[3,i])
 #         ax[3,i].legend_.remove()
-#         
+#
 #         par2 = ax[3,i]#.twiny()
 #         #par2.set_visible(False)
 #         new_fixed_axis = par2.get_grid_helper().new_fixed_axis
@@ -496,7 +510,7 @@ def plot_activity(df, et, FPS, grp = ['context','learning_epoch','port','puffed'
 #     with warnings.catch_warnings():
 #         warnings.simplefilter('ignore', UserWarning)
 #         fig.show()
-        
+
 def plot_data(df_spike, df_data, df_lick, et, FPS, grps = [[]], title='', div=None, fill=None):
     ncol = len(grps)
     nrow = 3 if df_lick is None else 4
@@ -519,7 +533,7 @@ def plot_data(df_spike, df_data, df_lick, et, FPS, grps = [[]], title='', div=No
         warnings.simplefilter('ignore', UserWarning)
         #fig.show()
         return fig
-        
+
 def plot_epochs(df_spike, df_data, df_lick, et, etc, FPS, grps = [[]], title='', div=None, fill=None):
     ncol = len(epochs)
     nrow = 3 if df_lick is None else 4
@@ -547,8 +561,8 @@ def plot_epochs(df_spike, df_data, df_lick, et, etc, FPS, grps = [[]], title='',
         warnings.simplefilter('ignore', UserWarning)
         #fig.show()
         return fig
-        
-        
+
+
 def draw_transients(ax, transients, experiment_id, FPS, roi_df):
     '''Plot transients with colored line and put a tic at the maxima'''
     import matplotlib
@@ -575,7 +589,7 @@ def draw_transients(ax, transients, experiment_id, FPS, roi_df):
         pass
     for i in range(0,len(events)):
         ax.axvline(x=events[i]*FPS, ymin=0.0, ymax = 1.0, linewidth=1, color='k')
-    ax.set_title('Transient peaks and durations ExID: '+experiment_id)
+    ax.set_title('Transient peaks and durations')
     ax.set_xlabel('Camera frame')
     ax.set_ylabel('Unit ID')
 
@@ -590,10 +604,10 @@ def draw_levels(ax, data, experiment_id, FPS, roi_df, zoom=0.5, dist=1.0):
         pass
     for i in range(0,len(events)):
         ax.axvline(x=events[i]*FPS, ymin=0.0, ymax = 1.0, linewidth=1, color='k')
-    ax.set_title('Transient peaks and durations ExID: '+experiment_id)
+    ax.set_title('Raw Ca-levels')
     ax.set_xlabel('Camera frame')
     ax.set_ylabel('Unit ID')
-    
+
 def draw_spiking_nan(ax, spiking, experiment_id, roi_df):
     '''Mark unavailable data with a gray dot'''
     # Plot all neural units in this experiment
@@ -608,7 +622,7 @@ def draw_spiking_nan(ax, spiking, experiment_id, roi_df):
             ax.plot(firing.loc[:,'frame'],firing.loc[:,'idx'],'.',ms=1,c='lightgray',label='missing')
     except:
         pass
-    
+
 def draw_conditions(ax, conditions, experiment_id, FPS, height=20, loc='lower center', screen_width=1.0, fontsize=24, cw=None):
     '''Draw a table and write experimental conditions into it'''
     import matplotlib
@@ -624,7 +638,7 @@ def draw_conditions(ax, conditions, experiment_id, FPS, height=20, loc='lower ce
                    ('port', True, 'lightblue'), ('puffed', True, 'yellow')]
     for label, value, color in replacement:
         c.loc[a[label]==value,label]=color
-    
+
     ylim = ax.get_ylim()
     #tab = pd.tools.plotting.table(ax, a, loc='lower center', fontsize=24, colWidths=cw/np.sum(cw))
     tab = matplotlib.table.table(ax, cellText=a.values,
@@ -635,8 +649,8 @@ def draw_conditions(ax, conditions, experiment_id, FPS, height=20, loc='lower ce
     for key, cell in tab.get_celld().items():
         cell.set_linewidth(0)
         cell.set_fontsize(fontsize)
-        
-        
+
+
 def draw_triggers(ax, triggers, experiment_id, pos=0, ls='x', c='b', ms=8):
     '''Plot trigger events'''
     try:
@@ -652,7 +666,7 @@ def draw_triggers(ax, triggers, experiment_id, pos=0, ls='x', c='b', ms=8):
                 ax.plot(x, pos, ls1, c=c1, ms=ms1)
     except:
         pass
-    
+
 def draw_behavior(ax, licks, experiment_id, FPS):
     '''Plot individual licks'''
     try:
@@ -699,5 +713,80 @@ def draw_population(ax, data, experiment_id, pos=-20, zoom=10.0, c='r', threshol
             ax.plot(data*zoom+pos,c=c,label=label)
     except:
         pass
+
+def show_peri_event1(ax, df, title=None, pos=-15, zoom=10.0, vmin=None, vmax=None):
+    '''Plot df using matshow'''
+    extent = np.min(df.columns.values)-0.5, np.max(df.columns.values)+0.5, -0.5, len(df)+0.5
+    ax.set_xlim(extent[0:2])
+    ax.set_ylim((pos-zoom,extent[3]))
+    ret = ax.matshow(df, origin='lower', aspect='auto', extent=extent, vmin=vmin, vmax=vmax)
+    ax.axhline(y=pos,xmin=0.0,xmax=1.0,c='gray')
+    ax.axvline(x=0,ymin=0.0,ymax=1.0,c='gray')
+    ax.plot(zoom*df.mean(axis=0)+pos)
+    ax.xaxis.set_ticks_position('bottom')
+    ax.set_xlabel('$\Delta$frame')
+    ax.set_ylabel('Unit ID')
+    ax.set_xlim(extent[0:2])
+    ax.set_ylim((pos-zoom,extent[3]))
+    if title is not None:
+        ax.set_title(title)
+    return ret
     
+def show_peri_event2(ax, df_mean, df_std, title=None, pos=-15, zoom=10.0, vmin=None, vmax=None):
+    import matlab_tools as mt
+    extent = np.min(df_mean.columns.values)-0.5, np.max(df_mean.columns.values)+0.5, -0.5, len(df_mean)+0.5
+    '''Plot mean and std using color and lightness-encoding'''
+    ax.set_xlim(extent[0:2])
+    ax.set_ylim((pos-zoom,extent[3]))
+    #img = mt.hls_matrix(mt.crop_series(0.4-0.5*df_mean.T.values,(0,0.8)),mt.crop_series(0.5-0.5*df_std.T.values,(0,1)),0.6)
+    img = mt.hls_matrix(mt.crop_series(0.2-0.25*df_mean.T.values,(0,0.8)),mt.crop_series(0.5-0.25*df_std.T.values,(0,1)),0.6)
+    ret = ax.imshow(img,interpolation='none',origin='lower',aspect='auto', extent=extent)
+    ax.axhline(y=pos,xmin=0.0,xmax=1.0,c='gray')
+    ax.axvline(x=0,ymin=0.0,ymax=1.0,c='gray')
+    ax.plot(zoom*df_mean.mean(axis=0)+pos)
+    ax.xaxis.set_ticks_position('bottom')
+    ax.set_xlabel('$\Delta$frame')
+    ax.set_ylabel('Unit ID')
+    ax.set_xlim(extent[0:2])
+    ax.set_ylim((pos-zoom,extent[3]))
+    if title is not None:
+        ax.set_title(title)
+    return ret
     
+def plot_peri_collection(collection, title=None, combine=True):
+    '''Plot a colection of peri-event activities provided in a list'''
+    max_cols = 10
+    num_plots = len(collection) * (1 if combine else 2)
+    num_rows = int(np.ceil(num_plots/float(max_cols)))
+    num_cols = max_cols if num_rows>1 else num_plots
+    fig, ax = plt.subplots(num_rows, num_cols, figsize=(2*num_cols+2,12*num_rows), sharex=True, sharey=True, squeeze=False)
+    ax = np.ravel(ax)
+    fig.tight_layout(rect=(0,0,0.9,0.9), w_pad=2, h_pad=8)
+    gradient = np.linspace(-1, 1, 256)
+    gradient = pd.DataFrame(np.vstack((gradient, gradient)).T, columns=[2,3])
+    cax1 = fig.add_axes([0.92, 0.1, 0.02, 0.8])
+    cax2 = fig.add_axes([0.96, 0.1, 0.02, 0.8])
+    if combine:
+        show_peri_event2(cax1, gradient, gradient*0, 'Mean', vmin=-1, vmax=1)
+        show_peri_event2(cax2, gradient*0, gradient+1, 'Std', vmin=-1, vmax=1)
+    else:
+        show_peri_event1(cax1, gradient, 'Mean', vmin=-1, vmax=1)
+        show_peri_event1(cax2, gradient+1, 'Stdev', vmin=0, vmax=2)
+    cax1.set_ylabel(''); cax1.set_yticks([0,128,256]); cax1.set_yticklabels([-1,0,1])
+    cax2.set_ylabel(''); cax2.set_yticks([0,128,256]); cax2.set_yticklabels([0,1,2])
+    cax1.set_xlabel(''); cax1.set_xticks([])
+    cax2.set_xlabel(''); cax2.set_xticks([])
+    fig.suptitle(title,fontsize=16)
+    
+    for i, (df, index, trig, allow, disable, title) in enumerate(collection):
+        dd, c = peri_event_avg(df, trig, allow=allow, disable=disable)
+        if c:
+            if index is not None:
+                dd = dd.reindex(index)
+            if combine:
+                show_peri_event2(ax[i], dd.mean(axis=1, level=1), dd.std(axis=1, level=1), '%s: %d'%(title,c), vmin=-1, vmax=1)
+            else:
+                show_peri_event1(ax[2*i], dd.mean(axis=1, level=1), '%s: %d'%(title,c), vmin=-1, vmax=1)
+                show_peri_event1(ax[2*i+1], dd.std(axis=1, level=1), 'Stdev', vmin=0, vmax=2)
+
+    return fig
