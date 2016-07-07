@@ -5,13 +5,14 @@ Created on Thu Jun 16 10:47:42 2016
 @author: Stippinger Marcell
 """
 
+from __future__ import (absolute_import, print_function)
+
 import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
-
-
+                        
 ### General access tools
 
 class Bunch:
@@ -134,6 +135,27 @@ def __create_mask(df, index=None, columns=None, threshold=0.9):
     return time_mask, roi_mask, time_roi_mask
 
 
+def __add_metadata(data, raw):
+    # Add metadata
+    data.max_nframe = raw.shape[1]
+    data.FPS = int(np.floor(data.max_nframe/60.))
+    if data.FPS not in [8, 30]:
+        warnings.warn('FPS guess might be wrong.')
+    data.event_frames = events*data.FPS
+    data.trials = raw.index.levels[0]
+    data.rois = raw.index.levels[1]
+    data.roi_df = pd.DataFrame(data.rois, columns=['roi_id']
+                    ).reset_index().rename(columns={'index':'idx'})
+    data.mirow = pd.MultiIndex.from_product(
+                (data.trials.values,data.rois.values),names=('time','roi_id'))
+    data.micol = pd.MultiIndex.from_product(
+                ('Spiking',np.array(range(0,data.max_nframe))),names=('','frame'))
+    data.icol = pd.Index(np.array(range(0,data.max_nframe)),name='frame')
+
+    data.time_mask, data.roi_mask, data.time_roi_mask = __create_mask(raw, data.mirow, data.icol)
+    return data
+    
+
 def df_epoch(df):
     '''Order DataFrame by epochs (epoch must be [first] index)'''
     ret = pd.DataFrame()
@@ -142,6 +164,54 @@ def df_epoch(df):
     return ret
 
 
+def spikes_to_timeseries(data, transients):
+    # Create boolean DataFrame which ROI is spiking in which camera frame
+
+    # create empty structure for cumsum
+    df_spike = pd.DataFrame(data=0,index=data.mirow,columns=data.icol)
+
+    # select spike data
+    spikes = transients.loc[transients['in_motion_period']==False,['start_frame','stop_frame']]
+    spikes['count']=1
+
+    # fill in spike start and stop points (rename column to keep columns.name in df_spike)
+    sp = spikes[['start_frame','count']].rename(columns={'start_frame':'frame'}).pivot(columns='frame').fillna(0)
+    df_spike = df_spike.add(sp['count'], fill_value=0)
+    sp = spikes[['stop_frame','count']].rename(columns={'stop_frame':'frame'}).pivot(columns='frame').fillna(0)
+    df_spike = df_spike.add(-sp['count'], fill_value=0)
+
+    # cumulate, conversion to int is not adviced if using NaNs
+    df_spike = df_spike.cumsum(axis=1).astype(int)
+    df_spike = df_spike + data.time_roi_mask
+
+    return df_spike
+    
+
+def licks_to_timeseries(data, behavior):
+    '''Create DataFrame how many licks happen in a given camera frame'''
+    # Check for valid data and calculate their frame
+    print('All entries', behavior.shape, end=' ')
+    df_lick = behavior[behavior.loc[:,'stop_time']>behavior.loc[:,'start_time']].copy()
+    print('Valid licks', df_lick.shape, end=' ')
+    df_lick['frame'] = (data.FPS*(df_lick['start_time']+df_lick['stop_time'])/2).apply(np.round).astype(int)
+    #display(df_lick.head())
+    #display(df_lick.tail())
+    
+    # Convert to a DataFrame like df_data or df_raw
+    df_lick = df_lick[['lick_idx','frame']].reset_index()
+    df_lick = df_lick.groupby(['time','frame']).count().unstack(fill_value=0)
+    #display(df_lick.head())
+    df_lick = df_lick['lick_idx'].reindex(index=data.mirow.levels[0],columns=data.icol,fill_value=0)
+    #display(df_lick.head())
+    
+    # Number of remaining licks
+    print('Remaining licks',df_lick.sum().sum())
+    # Smoothen
+    from scipy.ndimage.filters import gaussian_filter
+    df_lick = df_lick.apply(lambda x: gaussian_filter(x.astype(float)*data.FPS, sigma=0.25*data.FPS), axis=1, raw=True)
+    return df_lick
+    
+    
 def load_files(mydir):
     '''Load files of the Losonczi group'''
 
@@ -152,34 +222,20 @@ def load_files(mydir):
     # Raw Ca-signal
     data.raw = pd.read_hdf(os.path.join(mydir,'raw_data.h5'),key='table').sort_index()
     data.raw.columns = pd.Index(data.raw.columns.values.astype(int), name='frame')
+    __add_metadata(data, data.raw)
     # Filtered Ca-signal
     data.filtered = pd.read_hdf(os.path.join(mydir,'df_data.h5'),key='table').sort_index()
     data.filtered.columns = pd.Index(data.filtered.columns.values.astype(int), name='frame')
     # Spike-sorted
     data.transients = pd.read_hdf(os.path.join(mydir,'transients_data.h5'),key='table')
+    data.spike = spikes_to_timeseries(data, data.transients)
     # Licking behavior
     data.behavior = pd.read_hdf(os.path.join(mydir,'behavior_data.h5'),key='table')
     data.behavior.index.name='time'
+    data.lick = licks_to_timeseries(data, data.behavior)
     # Additional parameters (?)
     data.fluor = __load_fluor(mydir)
 
-    # Add metadata
-    data.max_nframe = data.raw.shape[1]
-    data.FPS = int(np.floor(data.max_nframe/60.))
-    if data.FPS not in [8, 30]:
-        warnings.warn('FPS guess might be wrong.')
-    data.event_frames = events*data.FPS
-    data.trials = data.raw.index.levels[0]
-    data.rois = data.raw.index.levels[1]
-    data.roi_df = pd.DataFrame(data.rois, columns=['roi_id']
-                    ).reset_index().rename(columns={'index':'idx'})
-    data.mirow = pd.MultiIndex.from_product(
-                (data.trials.values,data.rois.values),names=('time','roi_id'))
-    data.micol = pd.MultiIndex.from_product(
-                ('Spiking',np.array(range(0,data.max_nframe))),names=('','frame'))
-    data.icol = pd.Index(np.array(range(0,data.max_nframe)),name='frame')
-
-    data.time_mask, data.roi_mask, data.time_roi_mask = __create_mask(data.raw, data.mirow, data.icol)
     return data
 
 
@@ -312,7 +368,49 @@ def rev_broadcast(data, shape):
     return ret
 
 
-### Pattern atching ###
+### Pattern matching ###
+
+def trigger(data, threshold, rising=True, hold_off=None):
+    '''Find threshold crossings along first axis'''
+    data = np.array(data)
+    trig = np.full(data.shape,False,dtype=bool)
+    if hold_off:
+        raise ValueError('Hold off period not implemented yet.')
+    if rising:
+        trig[1:] = (data[1:]>threshold) & (data[:-1]<=threshold)
+    else:
+        trig[1:] = (data[1:]<threshold) & (data[:-1]>=threshold)
+    return trig
+
+def trigger_find_pd(df, threshold, axis=1, hold_off=None):
+    '''Find threshold crossings in both directions in a DataFrame'''
+    triggers_rise = df.apply(lambda x: trigger(x,threshold, True), axis=axis)
+    triggers_rise[triggers_rise==0]=np.nan
+    triggers_fall = df.apply(lambda x: trigger(x,threshold, False), axis=axis)
+    triggers_fall[triggers_fall==0]=np.nan
+    
+    if axis==1:
+        triggers_rise = triggers_rise.stack()
+        triggers_fall = triggers_fall.stack()
+    elif axis==0:
+        triggers_rise = triggers_rise.T.stack().T
+        triggers_fall = triggers_fall.T.stack().T
+    else:
+        warnings.warn('Axis reduction not implemented for axis.')
+    triggers_rise.name='weight'
+    triggers_fall.name='weight'
+    return triggers_rise, triggers_fall
+
+def trigger_enable_pd(df, start, stop):
+    '''Create trigger enabled array based on a pair of switch on and off events'''
+    mi = pd.MultiIndex.from_product((df.index.values, [start]), names=['time', 'frame'])
+    triggers_start = pd.Series(1.0, index=mi, name='weight')
+    mi = pd.MultiIndex.from_product((df.index.values, [stop]), names=['time', 'frame'])
+    triggers_stop = pd.Series(1.0, index=mi, name='weight')
+    mi = pd.MultiIndex.from_product((df.index.values, list(range(start,stop))), names=['time', 'frame'])
+    triggers_allow = pd.Series(1.0, index=mi, name='weight')
+
+    return triggers_start, triggers_stop, triggers_allow
 
 def match_pattern(data, pattern, std, decay, noise_level=0.01, detailed=False):
     '''Match pattern with decaying strength along time axis (rows). Use any number of columns.
