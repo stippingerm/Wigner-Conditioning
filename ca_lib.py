@@ -16,10 +16,14 @@ import warnings
 ### General access tools
 
 class Bunch:
-    '''Dot-access container'''
+    '''Mixed dot-access and bracket-access container'''
     def __init__(self, **kw):
         for name in kw:
             setattr(self, name, kw[name])
+    def __getitem__(self, name):
+        return self.__dict__[name]
+    def __setitem__(self, name,value):
+        self.__dict__[name]=value
     def __repr__(self):
         return self.__dict__.__repr__()
     def __str__(self):
@@ -876,9 +880,11 @@ def plot_peri_collection(collection, title=None, combine=True):
     cax2.set_xlabel(''); cax2.set_xticks([])
     fig.suptitle(title,fontsize=16)
     
+    num_rois = 0
     for i, (df, index, trig, allow, disable, title) in enumerate(collection):
         dd, c = peri_event_avg(df, trig, allow=allow, disable=disable)
         if c:
+            num_rois = np.max((num_rois, len(dd)))
             if index is not None:
                 dd = dd.reindex(index)
             if combine:
@@ -886,5 +892,7 @@ def plot_peri_collection(collection, title=None, combine=True):
             else:
                 show_peri_event1(ax[2*i], dd.mean(axis=1, level=1), '%s: %d'%(title,c), vmin=-1, vmax=1)
                 show_peri_event1(ax[2*i+1], dd.std(axis=1, level=1), 'Stdev', vmin=0, vmax=2)
+    ax[-1].set_ylim(ymax=num_rois)
+    fig.sca(ax[-1])
 
     return fig
