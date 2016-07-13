@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
-                        
+
 ### General access tools
 
 class Bunch:
@@ -50,6 +50,28 @@ def test_hdf(filename):
             raise FileExistsError('File is already open.')
         return False
 
+def MakeFrame(data, index=None, columns=None):
+    if type(data) is pd.DataFrame:
+        return data
+    if type(data) is pd.Series:
+        return data.to_frame()
+    try:
+        data = np.array(data, ndmin=1)
+        if data.ndim > 2:
+            raise ValueError('Data has too many dimensions to be converted to DataFrame')
+        if data.ndim < 2:
+            pass
+        data = pd.DataFrame(data, index=index, columns=columns)
+        return data
+    except:
+        print ('Data could not be converted to DataFrame')
+        raise
+
+def MakeList(data):
+    if type(data) is str:
+        return [data]
+    else:
+        return list(data)
 
 ### Constants for Losonczi Lab protocol
 
@@ -92,9 +114,12 @@ def __format_experiment_traits(df):
     '''Translate traits to human readable notation'''
     from datetime import datetime as dt
     et = df.rename(columns={'licking':'port','time':'timestr'})
+    # Hack N°1: correct inconsistent Baseline label
     et['context'] = et['context'].replace('baseline','Baseline')
     et['port'] = et['port'].apply(lambda x: 'W+' if x else 'W-')
     et['puffed'] = et['puffed'].apply(lambda x: 'A+' if x else 'A-')
+    # Hack N°2: convert warming up session 'PRE' to numeric value
+    et['session_num'] = et['session_num'].replace('PRE','-1')
     et['session_num'] = et['session_num'].astype(int)
     et['datetime'] = et['timestr'].apply(lambda t: dt.strptime(t, dtformat))
     leapaday = (et['datetime'].values[1:]-et['datetime'].values[:-1]) > sessionbreak
@@ -158,13 +183,11 @@ def __add_metadata(data, raw):
 
     data.time_mask, data.roi_mask, data.time_roi_mask = __create_mask(raw, data.mirow, data.icol)
     return data
-    
+
 
 def df_epoch(df):
     '''Order DataFrame by epochs (epoch must be [first] index)'''
-    ret = pd.DataFrame()
-    for col in epochs.values:
-        ret = ret.append(df.loc[[col],:])
+    ret = df.reindex(index=epochs, level='learning_epoch')
     return ret
 
 
@@ -189,7 +212,7 @@ def spikes_to_timeseries(data, transients):
     df_spike = df_spike + data.time_roi_mask
 
     return df_spike
-    
+
 
 def licks_to_timeseries(data, behavior):
     '''Create DataFrame how many licks happen in a given camera frame'''
@@ -200,22 +223,22 @@ def licks_to_timeseries(data, behavior):
     df_lick['frame'] = (data.FPS*(df_lick['start_time']+df_lick['stop_time'])/2).apply(np.round).astype(int)
     #display(df_lick.head())
     #display(df_lick.tail())
-    
+
     # Convert to a DataFrame like df_data or df_raw
     df_lick = df_lick[['lick_idx','frame']].reset_index()
     df_lick = df_lick.groupby(['time','frame']).count().unstack(fill_value=0)
     #display(df_lick.head())
     df_lick = df_lick['lick_idx'].reindex(index=data.mirow.levels[0],columns=data.icol,fill_value=0)
     #display(df_lick.head())
-    
+
     # Number of remaining licks
     print('Remaining licks',df_lick.sum().sum())
     # Smoothen
     from scipy.ndimage.filters import gaussian_filter
     df_lick = df_lick.apply(lambda x: gaussian_filter(x.astype(float)*data.FPS, sigma=0.25*data.FPS), axis=1, raw=True)
     return df_lick
-    
-    
+
+
 def load_files(mydir):
     '''Load files of the Losonczi group'''
 
@@ -392,7 +415,7 @@ def trigger_find_pd(df, threshold, axis=1, hold_off=None):
     triggers_rise[triggers_rise==0]=np.nan
     triggers_fall = df.apply(lambda x: trigger(x,threshold, False), axis=axis)
     triggers_fall[triggers_fall==0]=np.nan
-    
+
     if axis==1:
         triggers_rise = triggers_rise.stack()
         triggers_fall = triggers_fall.stack()
@@ -503,75 +526,127 @@ def search_pattern(df, triggers, trials, FPS, diam = (-3,3), decay_time=0.1, tri
 
 ### Plotting specific to Losonczi Lab data ###
 
-def plot_activity(df, et, FPS, grp = ['context','learning_epoch','port','puffed'],
-                  name = 'Population activity (spiking)', ax = None, div=None, fill=None, alpha=0.05):
-    '''Perform grouping and plot data into one subplot'''
-    # NOTE: session_num is a string object therefore it is not included in the summation or averaging at the aggregation step of groupby
-    # but the traits port and puffed are boolean and kept if uniform, so we get rid of them by conforming to the original index
-    from matplotlib.font_manager import FontProperties
-    fontP = FontProperties()
-    fontP.set_size('xx-small')
-    if ax is None:
-        fig = plt.figure()
-        ax = fig.gca()
-    if len(grp):
-        gb = df.join(et,how='left').groupby(grp)
-        res = gb.mean().reindex(columns=df.columns)
+
+def draw_activity(ax, values, errors=0, ylabel=None, scale_to_percentile=[1,99],
+                  pos=None, xlabel=None, separators=[], alpha=0.05):
+    '''Plot data and error DataFrames with line and area into one subplot'''
+
+    # sanitize input
+    values = MakeFrame(values)
+    if errors is 0:
+        errors = np.zeros((len(values),1)).astype(float)
+        same_err = True
+        fill = False
+    else:
+        errors = MakeFrame(errors)
+        same_err = (len(errors.columns)==1) and (
+                        (errors.columns.dtype is np.dtype(np.int64)) or
+                                (errors.columns[0] not in values.columns))
+        fill = True
+
+    # get absicssa positions
+    if pos is None:
         try:
-            std = gb.std().reindex(columns=df.columns)
+            pos = values.index.values.astype(float)
         except:
-            #C:\Program Files\Anaconda3\envs\py27\lib\site-packages\pandas\core\groupby.py in std(self, ddof)
-            #   979         # todo, implement at cython level?
-            #-->980         return np.sqrt(self.var(ddof=ddof))
-            #AttributeError: 'float' object has no attribute 'sqrt'
-            std = 0
-        #count = df[[]].reset_index().drop_duplicates(['time']).set_index(['time']).join(et,how='left').groupby(grp).count()
-        count = et.reindex(pd.Index(df.index.get_level_values('time').unique(), name='time')).groupby(grp).count()
-        if (count.ndim>1):
-            count = count.ix[:,0]
-        for i in range(0,len(res)):
-            val = res.values[i]
-            try:
-                err = std.values[i]
-            except:
-                # Same mysterious error
-                err = 0
-            pos = np.arange(0,len(val)) if div is None else div
-            cnt = count.values[i]
-            if fill=='std':
-                f1 = ax.fill_between(pos, val-err, val+err, alpha=alpha, interpolate=False, edgecolor=None)
-            elif fill=='err':
-                f1 = ax.fill_between(pos, val-err/np.sqrt(cnt), val+err/np.sqrt(cnt), alpha=alpha, interpolate=False, edgecolor=None)
-            l1 = ax.plot(pos, val, label=('%s: %d'%(res.index.values[i],cnt)))
-            if fill is not None:
+            pos = list(range(0,len(values.index)))
+
+    # plot
+    for i, column in enumerate(values.columns):
+        val = values.iloc[:,i]
+        l1 = ax.plot(pos, val, label=column)
+        try:
+            if fill:
+                err = errors.iloc[:,0] if same_err else errors.loc[:,column]
+
+                f1 = ax.fill_between(pos, val-err, val+err, alpha=alpha,
+                                     interpolate=False, edgecolor=None)
                 f1.set_facecolors(l1[0].get_color())
                 f1.set_edgecolors('none')
-    else:
-        res = df.mean(axis=0)
-        val = res.values
-        std = df.std(axis=0).values
-        pos = np.arange(0,len(res)) if div is None else div
-        if fill=='std':
-            f1 = ax.fill_between(pos, val-err, val+err, alpha=alpha, interpolate=False, edgecolor=None)
-        elif fill=='err':
-            f1 = ax.fill_between(pos, val-err/np.sqrt(cnt), val+err/np.sqrt(cnt), alpha=alpha, interpolate=False, edgecolor=None)
-        ax.plot(pos,res.values,label='whole popuation')
-        if fill is not None:
-            f1.set_facecolors(l1[0].get_color())
-            f1.set_edgecolors('none')
-    q = res.values.ravel()
+        except KeyError:
+            warnings.warn('Label unmatched in errors DataFrame.')
+        except:
+            print('Fill error')
+            raise
+
+    # set scale
+    q = values.values.ravel()
     q = q[np.isfinite(q)]
-    q = np.percentile(q[np.isfinite(q)],[1,99]) if len(q)>2 else np.array([0,1])
+    q = np.percentile(q,scale_to_percentile) if len(q)>2 else np.array([0,1])
     ax.set_ylim(np.mean(q)+2*(q-np.mean(q)))
     ax.set_xlim(xmin=0)
-    for i in range(0,len(events)):
-        ax.axvline(x=events[i]*FPS, ymin=0.0, ymax = 1.0, linewidth=1, color='k')
-    ax.set_xlabel('Camera frame')
-    ax.set_ylabel(name)
-    #leg = ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), title=', '.join(grp)) # prop=fontP)
-    #leg.get_title().set_fontsize('large')
-    #leg.get_title().set_fontweight('bold')
-    #ax.show()
+    for sep in separators:
+        ax.axvline(x=sep, ymin=0.0, ymax = 1.0, linewidth=1, color='k')
+    if ylabel is not None:
+        ax.set_ylabel(ylabel)
+    if xlabel is not None:
+        ax.set_xlabel(xlabel)
+
+def grp_activity(df, filter_columns=[], filter_conditions=None, grp = [],
+                 keep_columns=None, count_unique_columns=None):
+    '''Perform grouping and plot data into one subplot'''
+
+    # Filter
+    filter_columns = MakeList(filter_columns)
+    if (filter_conditions is not None) and len(filter_columns):
+        test = filter_conditions if callable(filter_conditions) else (
+                lambda x: x in filter_conditions)
+        sample = df.loc[:,filter_columns]
+        keep = sample.apply(test, axis=1)
+        df = df[keep]
+
+    # Aggregate
+    grp = MakeList(grp)
+    if len(grp):
+        gb = df.groupby(grp)
+    else:
+        gb = df
+
+    mean = gb.mean().reindex(columns=keep_columns)
+    try:
+        std = gb.std().reindex(columns=keep_columns)
+    except AttributeError:
+        ### Found the cause: non-float (e.g. bool) columns were grouped too
+        #C:\Program Files\Anaconda3\envs\py27\lib\site-packages\pandas\core\groupby.py in std(self, ddof)
+        #   979         # todo, implement at cython level?
+        #-->980         return np.sqrt(self.var(ddof=ddof))
+        #AttributeError: 'float' object has no attribute 'sqrt'
+        warnings.warn('Attribute error, setting std to zero')
+        std = pd.DataFrame(0, index=mean.index, columns=mean.columns)
+
+    # Count
+    if count_unique_columns is None:
+        count = gb.count()
+    else:
+        count_unique_columns = MakeList(count_unique_columns)
+        try:
+            items = df.reset_index()
+        except:
+            items = df
+        items = items.loc[:,grp+count_unique_columns].drop_duplicates()
+        count = items.groupby(grp).count()
+    if (count.ndim>1):
+        count = count.ix[:,0]
+
+    return count, mean, std
+
+def plot_activity(ax, df, et, FPS, grp = sort_context,
+                  name = None, div = None, fill = None, alpha = 0.05):
+    '''Perform grouping and plot data into one subplot'''
+    # Only pass needed columns, otherwise groupy.std() might fail
+    count, mean, std = grp_activity(df.join(et[grp], how='left'), grp=grp,
+                                    keep_columns=df.columns, count_unique_columns='time')
+    labels = ['%s: %d' % lab for lab in zip(mean.index,count)]
+    count.index, mean.index, std.index = labels, labels, labels
+    values = mean.T
+    if fill == 'std':
+        errors = std.T
+    elif fill == 'err':
+        errors = std.T / np.sqrt(count)
+    else:
+        errors = 0
+    #print(values.describe(), '\n', errors.describe())
+    draw_activity(ax, values, errors, name, xlabel='Camera frame', separators = FPS*events)
 
 
 # # Some experimenting
@@ -590,15 +665,15 @@ def plot_activity(df, et, FPS, grp = ['context','learning_epoch','port','puffed'
 #         ax[0,i] = host_subplot(4, ncol, i*ncol+1)
 #         ax[0,i].axis('off')
 #         ax[1,i] = host_subplot(4, ncol, i*ncol+2)
-#         plot_activity(df_spike,grps[i],"Spiking",ax=ax[1,i])
+#         plot_activity(ax[1,i], df_spike,grps[i],"Spiking")
 #         leg = ax[1,i].legend(loc='lower center', bbox_to_anchor=(0.5, 1.1), title=', '.join(grps[i]))
 #         leg.get_title().set_fontsize('large')
 #         leg.get_title().set_fontweight('bold')
 #         ax[2,i] = host_subplot(4, ncol, i*ncol+3)
-#         plot_activity(df_data,grps[i],"Ca-level",ax=ax[2,i])
+#         plot_activity(ax[2,i], df_data,grps[i],"Ca-level")
 #         ax[2,i].legend_.remove()
 #         ax[3,i] = host_subplot(4, ncol, i*ncol+4, axes_class=AA.Axes)
-#         plot_activity(df_lick,grps[i],"Licking",ax=ax[3,i])
+#         plot_activity(ax[3,i], df_lick,grps[i],"Licking")
 #         ax[3,i].legend_.remove()
 #
 #         par2 = ax[3,i]#.twiny()
@@ -622,14 +697,14 @@ def plot_data(df_spike, df_data, df_lick, et, FPS, grps = [[]], title='', div=No
         fig.suptitle(title, fontsize=16)
     for i in range(0, ncol):
         ax[0,i].axis('off')
-        plot_activity(df_spike, et, FPS, grps[i], "Spiking", ax=ax[1,i],div=div,fill=fill)
+        plot_activity(ax[1,i], df_spike, et, FPS, grps[i], "Spiking", div=div, fill=fill)
         leg = ax[1,i].legend(loc='lower center', bbox_to_anchor=(0.5, 1.1), title=', '.join(grps[i]))
         leg.get_title().set_fontsize('large')
         leg.get_title().set_fontweight('bold')
-        plot_activity(df_data, et, FPS, grps[i], "Ca-level", ax=ax[2,i],div=div,fill=fill)
+        plot_activity(ax[2,i], df_data, et, FPS, grps[i], "Ca-level", div=div, fill=fill)
         #ax[2,i].legend_.remove()
         if df_lick is not None:
-            plot_activity(df_lick, et, FPS, grps[i], "Licking", ax=ax[3,i],div=div,fill=fill)
+            plot_activity(ax[3,i], df_lick, et, FPS, grps[i], "Licking", div=div,fill=fill)
             #ax[3,i].legend_.remove()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
@@ -645,19 +720,19 @@ def plot_epochs(df_spike, df_data, df_lick, et, etc, FPS, grps = [[]], title='',
         fig.suptitle(title, fontsize=16)
     for i in range(0, ncol):
         epoch = epochs.values[i]
-        keys = etc[[]].reset_index()
+        keys = etc.loc[:,[]].reset_index()
         keys['learning_epoch'] = epoch
         sel = et.reset_index(drop=True).merge(keys, on=['context', 'port', 'puffed', 'learning_epoch'], how='inner')
         ax[0,i].set_title(epoch,y=0.8)
         ax[0,i].axis('off')
-        plot_activity(df_spike.reindex(sel.loc[:,'timestr'],level=0), et, FPS, grps[0],"Spiking",ax=ax[1,i],div=div,fill=fill)
+        plot_activity(ax[1,i], df_spike.reindex(sel.loc[:,'timestr'],level=0), et, FPS, grps[0], "Spiking", div=div, fill=fill)
         leg = ax[1,i].legend(loc='lower center', bbox_to_anchor=(0.5, 1.1), title=', '.join(grps[0]))
         leg.get_title().set_fontsize('large')
         leg.get_title().set_fontweight('bold')
-        plot_activity(df_data.reindex(sel.loc[:,'timestr'],level=0), et, FPS, grps[0],"Ca-level",ax=ax[2,i],div=div,fill=fill)
+        plot_activity(ax[2,i], df_data.reindex(sel.loc[:,'timestr'],level=0), et, FPS, grps[0], "Ca-level", div=div, fill=fill)
         #ax[2,i].legend_.remove()
         if df_lick is not None:
-            plot_activity(df_lick.reindex(sel.loc[:,'timestr'].rename('time')), et, FPS, grps[0],"Licking",ax=ax[3,i],div=div,fill=fill)
+            plot_activity(ax[3,i], df_lick.reindex(sel.loc[:,'timestr'].rename('time')), et, FPS, grps[0], "Licking", div=div, fill=fill)
             #ax[3,i].legend_.remove()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
@@ -833,7 +908,7 @@ def show_peri_event1(ax, df, title=None, pos=-15, zoom=10.0, vmin=None, vmax=Non
     if title is not None:
         ax.set_title(title)
     return ret
-    
+
 def show_peri_event2(ax, df_mean, df_std, title=None, pos=-15, zoom=10.0, vmin=None, vmax=None):
     import matlab_tools as mt
     extent = np.min(df_mean.columns.values)-0.5, np.max(df_mean.columns.values)+0.5, -0.5, len(df_mean)+0.5
@@ -854,7 +929,7 @@ def show_peri_event2(ax, df_mean, df_std, title=None, pos=-15, zoom=10.0, vmin=N
     if title is not None:
         ax.set_title(title)
     return ret
-    
+
 def plot_peri_collection(collection, title=None, combine=True):
     '''Plot a colection of peri-event activities provided in a list'''
     max_cols = 10
@@ -879,7 +954,7 @@ def plot_peri_collection(collection, title=None, combine=True):
     cax1.set_xlabel(''); cax1.set_xticks([])
     cax2.set_xlabel(''); cax2.set_xticks([])
     fig.suptitle(title,fontsize=16)
-    
+
     num_rois = 0
     for i, (df, index, trig, allow, disable, title) in enumerate(collection):
         dd, c = peri_event_avg(df, trig, allow=allow, disable=disable)
