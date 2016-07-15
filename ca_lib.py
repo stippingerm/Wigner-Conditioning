@@ -50,6 +50,69 @@ def test_hdf(filename):
             raise FileExistsError('File is already open.')
         return False
 
+def store_to_hdf(filename, data):
+    '''Store a dict havind string keys associated with Series, DataFrames or
+        Index, np.ndarray and elementary types (float, int) into a HDFStore'''
+    with pd.HDFStore(filename, mode='w') as anidb:
+        for key, value in data.iteritems():
+            with warnings.catch_warnings(record=True) as w:
+
+                try:
+                    anidb['/df/'+key] = value
+                except TypeError:
+                    if issubclass(type(value),np.ndarray):
+                        if value.ndim == 0:
+                            df = pd.Series(value)
+                            anidb['/np0/'+key] = df
+                        elif value.ndim == 1:
+                            df = pd.Series(value)
+                            anidb['/np1/'+key] = df
+                        elif value.ndim == 2:
+                            df = pd.DataFrame(value)
+                            anidb['/np2/'+key] = df
+                        elif value.ndim == 3:
+                            df = pd.Panel(value)
+                            anidb['/np3/'+key] = df
+                        else:
+                            raise('Cannot store array withmore than 3 dimensions.')
+                    elif issubclass(type(value),pd.Index):
+                        df = pd.DataFrame(data=0,index=value,columns=['zeros'])
+                        anidb['/idx/'+key] = df
+                    else:
+                        df = pd.Series([value])
+                        anidb['/val/'+key] = df
+                        
+                #assert len(w) == 1
+                if (len(w)):
+                    print (w[-1].category, 'when storing', key)
+                    print (w[-1].message)
+
+def read_from_hdf(filename, data = {}):
+    '''Store a dict havind string keys associated with Series, DataFrames or
+        Index, np.ndarray and elementary types (float, int) into a HDFStore'''
+    import re
+    prog = re.compile('^/([^/]*)/([^/]*)$')
+    with pd.HDFStore(filename, mode='r') as anidb:
+        for path in anidb.keys():
+            match = prog.match(path)
+            if match is None:
+                raise AttributeError('Format of key not recognized')
+            dtype, key = match.group(1, 2)
+            value = anidb[path]
+            if dtype == 'df':
+                data[key] = value
+            elif dtype == 'np0':
+                data[key] = np.array(value.values[0])
+            elif dtype in ['np1', 'np2', 'np3']:
+                data[key] = value.values
+            elif dtype == 'idx':
+                data[key] = value.index
+            elif dtype == 'val':
+                data[key] = value.values[0]
+            else:
+                raise AttributeError('dtype not recognized')
+    return data
+                    
 def MakeFrame(data, index=None, columns=None):
     if type(data) is pd.DataFrame:
         return data
@@ -75,11 +138,12 @@ def MakeList(data):
 
 ### Constants for Losonczi Lab protocol
 
-# Set event lengths
-phases = ['Ready', 'CS', 'Trace', 'US', 'End']
+# Set phase names and durations
+phases = pd.CategoricalIndex(['Ready', 'CS', 'Trace', 'US', 'End'],
+                             ordered=True, name='phase')
 phase_lookup={'Ready':0,'CS':1,'Trace':2,'US':3,'End':4}
-durations=np.array([0,10,20,15,5])
-events=np.cumsum(durations).astype(int)
+durations=np.array([10,20,15,5,9])
+events=np.cumsum(np.append([0],durations)).astype(int)
 
 legal_conditions=pd.MultiIndex.from_tuples([('Baseline','W+','A-'),
                               ('CS+','W+','A+'),('CS+','W+','A-'),
@@ -98,10 +162,12 @@ short_colors = ['y', 'magenta','red','cyan','lime']
 dtformat = '%Y-%m-%d-%Hh%Mm%Ss'
 sessionbreak = np.timedelta64(8,'h')
 
-epochs = pd.CategoricalIndex(['Pre-Learning', 'Learning', 'Post-Learning'], ordered=True)
-contexts = pd.CategoricalIndex(['Baseline', 'CS+', 'CS-'], ordered=True)
-port = pd.CategoricalIndex(['W+', 'W-'], ordered=True)
-puff = pd.CategoricalIndex(['A+', 'A-'], ordered=True)
+epochs = pd.CategoricalIndex(['Pre-Learning', 'Learning', 'Post-Learning'],
+                             ordered=True, name='learning_epoch')
+contexts = pd.CategoricalIndex(['Baseline', 'CS+', 'CS-'],
+                               ordered=True, name='context')
+port = pd.CategoricalIndex(['W+', 'W-'], ordered=True, name='port')
+puff = pd.CategoricalIndex(['A+', 'A-'], ordered=True, name='puffed')
 
 display_learning = ['learning_epoch','context','puffed','port']
 sort_learning = ['learning_epoch','context','port','puffed']
@@ -110,6 +176,40 @@ sort_context = ['context','learning_epoch','port','puffed']
 
 ### Input handling for Losonczi Lab protocol
 
+def pd_add_meta(df, title=None, description=None, meta=None, storename='metadata'):
+    if (meta is not None) and type(meta) is not dict:
+        raise AttributeError('The metadata must be a dict')
+    if storename in df.columns:
+        raise AttributeError('The dataframe already has a column named metadata '+
+                'we did not add anything to avoid confusion')
+    try:
+        current = df.__getattribute__(storename)
+        if type(current) is not dict:
+            raise AttributeError('The attribute metadata exists and is not a dict')
+    except AttributeError:
+        current = {}
+    if title is not None:
+        meta['title'] = title
+    if description is not None:
+        meta['description'] = description
+    current.update(meta)
+    df.__setattribute__(storename, current)
+    return df
+
+def pd_get_meta(df, storename='metadata', fieldname=None, default=None):
+    if storename in df.columns:
+        warnings.warn('The dataframe already has a column named metadata')
+    try:
+        current = df.__getattribute__(storename)
+        if type(current) is not dict:
+            raise AttributeError('The attribute metadata exists and is not a dict')
+    except AttributeError:
+        current = {}
+    if fieldname is None:
+        return df
+    else:
+        return current.get(fieldname, default)
+    
 def __format_experiment_traits(df):
     '''Translate traits to human readable notation'''
     from datetime import datetime as dt
@@ -171,6 +271,8 @@ def __add_metadata(data, raw):
     if data.FPS not in [8, 30]:
         warnings.warn('FPS guess might be wrong.')
     data.event_frames = events*data.FPS
+    data.event_frames[phase_lookup['End']+1] = data.max_nframe
+    data.event_durations = data.event_frames[1:]-data.event_frames[:-1]
     data.trials = raw.index.levels[0]
     data.rois = raw.index.levels[1]
     data.roi_df = pd.DataFrame(data.rois, columns=['roi_id']
@@ -569,18 +671,22 @@ def draw_activity(ax, values, errors=0, ylabel=None, scale_to_percentile=[1,99],
             print('Fill error')
             raise
 
-    # set scale
-    q = values.values.ravel()
-    q = q[np.isfinite(q)]
-    q = np.percentile(q,scale_to_percentile) if len(q)>2 else np.array([0,1])
-    ax.set_ylim(np.mean(q)+2*(q-np.mean(q)))
-    ax.set_xlim(xmin=0)
+    # set labels
     for sep in separators:
         ax.axvline(x=sep, ymin=0.0, ymax = 1.0, linewidth=1, color='k')
     if ylabel is not None:
         ax.set_ylabel(ylabel)
     if xlabel is not None:
         ax.set_xlabel(xlabel)
+
+    # set scale
+    q = values.values.ravel()
+    q = q[np.isfinite(q)]
+    if len(q)>2:
+        q = np.percentile(q,scale_to_percentile)
+        ax.set_ylim(np.mean(q)+2*(q-np.mean(q)))
+    if len(values.columns):
+        ax.set_xlim(xmin=0)
 
 def grp_activity(df, filter_columns=[], filter_conditions=None, grp = [],
                  keep_columns=None, count_unique_columns=None):
@@ -589,30 +695,39 @@ def grp_activity(df, filter_columns=[], filter_conditions=None, grp = [],
     # Filter
     filter_columns = MakeList(filter_columns)
     if (filter_conditions is not None) and len(filter_columns):
-        test = filter_conditions if callable(filter_conditions) else (
-                lambda x: x in filter_conditions)
-        sample = df.loc[:,filter_columns]
-        keep = sample.apply(test, axis=1)
+        if callable(filter_conditions):
+            test = filter_conditions
+            raw = False
+        else:
+            test = lambda x: x in filter_conditions
+            raw = True
+        try:
+            sample = df.reset_index().loc[:,filter_columns]
+        except ValueError:
+            sample = df.loc[:,filter_columns]
+        keep = sample.apply(test, axis=1, raw=raw).values.astype(bool)
+        # print (sum(keep), 'of', keep.shape, df.shape)
         df = df[keep]
 
     # Aggregate
     grp = MakeList(grp)
     if len(grp):
         gb = df.groupby(grp)
+        mean = gb.mean().reindex(columns=keep_columns)
+        try:
+            std = gb.std().reindex(columns=keep_columns)
+        except AttributeError:
+            ### Found the cause: non-float (e.g. bool) columns were grouped too
+            #C:\Program Files\Anaconda3\envs\py27\lib\site-packages\pandas\core\groupby.py in std(self, ddof)
+            #   979         # todo, implement at cython level?
+            #-->980         return np.sqrt(self.var(ddof=ddof))
+            #AttributeError: 'float' object has no attribute 'sqrt'
+            warnings.warn('Attribute error, setting std to zero')
+            std = pd.DataFrame(0, index=mean.index, columns=mean.columns)
     else:
-        gb = df
-
-    mean = gb.mean().reindex(columns=keep_columns)
-    try:
-        std = gb.std().reindex(columns=keep_columns)
-    except AttributeError:
-        ### Found the cause: non-float (e.g. bool) columns were grouped too
-        #C:\Program Files\Anaconda3\envs\py27\lib\site-packages\pandas\core\groupby.py in std(self, ddof)
-        #   979         # todo, implement at cython level?
-        #-->980         return np.sqrt(self.var(ddof=ddof))
-        #AttributeError: 'float' object has no attribute 'sqrt'
-        warnings.warn('Attribute error, setting std to zero')
-        std = pd.DataFrame(0, index=mean.index, columns=mean.columns)
+        gb = df.reindex(columns=keep_columns)
+        mean = gb.mean().to_frame(name='all').T
+        std = gb.std().to_frame(name='all').T
 
     # Count
     if count_unique_columns is None:
@@ -624,17 +739,22 @@ def grp_activity(df, filter_columns=[], filter_conditions=None, grp = [],
         except:
             items = df
         items = items.loc[:,grp+count_unique_columns].drop_duplicates()
-        count = items.groupby(grp).count()
+        if len(grp):
+            count = items.groupby(grp).count()
+        else:
+            count = items.count()
     if (count.ndim>1):
         count = count.ix[:,0]
 
     return count, mean, std
 
-def plot_activity(ax, df, et, FPS, grp = sort_context,
-                  name = None, div = None, fill = None, alpha = 0.05):
+def plot_activity(ax, df, et, FPS, filter_columns=[], filter_conditions=None,
+                  grp = sort_context, name = None, div = 'deprecated', fill = None, alpha = 0.05):
     '''Perform grouping and plot data into one subplot'''
     # Only pass needed columns, otherwise groupy.std() might fail
-    count, mean, std = grp_activity(df.join(et[grp], how='left'), grp=grp,
+    needed_columns = list(set(grp)|set(filter_columns))
+    count, mean, std = grp_activity(df.join(et[needed_columns], how='left'), grp=grp,
+                                    filter_columns=filter_columns, filter_conditions=filter_conditions,
                                     keep_columns=df.columns, count_unique_columns='time')
     labels = ['%s: %d' % lab for lab in zip(mean.index,count)]
     count.index, mean.index, std.index = labels, labels, labels
@@ -646,98 +766,68 @@ def plot_activity(ax, df, et, FPS, grp = sort_context,
     else:
         errors = 0
     #print(values.describe(), '\n', errors.describe())
-    draw_activity(ax, values, errors, name, xlabel='Camera frame', separators = FPS*events)
+    draw_activity(ax, values, errors, name, xlabel='Camera frame', separators = FPS*events[:-1])
+
 
 
 # # Some experimenting
 #
-# def plot_data(df_spike, df_data, df_lick, grps = [[]], title=''):
 #     from mpl_toolkits.axes_grid1 import host_subplot, AxesGrid
 #     import mpl_toolkits.axisartist as AA
-#     ncol = len(grps)
-#     #fig, ax = plt.subplots(4, ncol, figsize=(6*ncol,13), sharex=True, squeeze=False)
-#     fig = plt.figure(figsize=(6*ncol,13))
-#     ax = np.ndarray((4,ncol),dtype=object)
-#     #fig.tight_layout(pad=3, h_pad=3)
-#     if len(title):
-#         fig.suptitle(title, fontsize=16)
-#     for i in range(0, ncol):
-#         ax[0,i] = host_subplot(4, ncol, i*ncol+1)
-#         ax[0,i].axis('off')
-#         ax[1,i] = host_subplot(4, ncol, i*ncol+2)
-#         plot_activity(ax[1,i], df_spike,grps[i],"Spiking")
-#         leg = ax[1,i].legend(loc='lower center', bbox_to_anchor=(0.5, 1.1), title=', '.join(grps[i]))
-#         leg.get_title().set_fontsize('large')
-#         leg.get_title().set_fontweight('bold')
-#         ax[2,i] = host_subplot(4, ncol, i*ncol+3)
-#         plot_activity(ax[2,i], df_data,grps[i],"Ca-level")
-#         ax[2,i].legend_.remove()
-#         ax[3,i] = host_subplot(4, ncol, i*ncol+4, axes_class=AA.Axes)
-#         plot_activity(ax[3,i], df_lick,grps[i],"Licking")
-#         ax[3,i].legend_.remove()
-#
-#         par2 = ax[3,i]#.twiny()
-#         #par2.set_visible(False)
-#         new_fixed_axis = par2.get_grid_helper().new_fixed_axis
-#         par2.axis["bottom"] = new_fixed_axis(loc="bottom",
+#     par2 = ax[3,i]#.twiny()
+#     #par2.set_visible(False)
+#     new_fixed_axis = par2.get_grid_helper().new_fixed_axis
+#     par2.axis["bottom"] = new_fixed_axis(loc="bottom",
 #                                         axes=par2,
 #                                         offset=(0, -50))
-#         par2.axis["bottom"].toggle(all=True)
-#         par2.set_xlabel("Velocity")
-#     with warnings.catch_warnings():
-#         warnings.simplefilter('ignore', UserWarning)
-#         fig.show()
+#     par2.axis["bottom"].toggle(all=True)
+#     par2.set_xlabel("Velocity")
 
-def plot_data(df_spike, df_data, df_lick, et, FPS, grps = [[]], title='', div=None, fill=None):
+def plot_data(data, dfs, names, grps = [[]], title='', div='deprecated', fill=None):
+    dfs = MakeList(dfs)
+    names = MakeList(names)
+    if len(dfs) != len(names):
+        raise ValueError('Number of DataFrames and names must be matched')
     ncol = len(grps)
-    nrow = 3 if df_lick is None else 4
+    nrow = len(dfs)+1
     fig, ax = plt.subplots(nrow, ncol, figsize=(6*ncol,1+3*nrow), sharex=True, squeeze=False)
     fig.tight_layout(pad=3, h_pad=3)
     if len(title):
         fig.suptitle(title, fontsize=16)
-    for i in range(0, ncol):
-        ax[0,i].axis('off')
-        plot_activity(ax[1,i], df_spike, et, FPS, grps[i], "Spiking", div=div, fill=fill)
-        leg = ax[1,i].legend(loc='lower center', bbox_to_anchor=(0.5, 1.1), title=', '.join(grps[i]))
-        leg.get_title().set_fontsize('large')
-        leg.get_title().set_fontweight('bold')
-        plot_activity(ax[2,i], df_data, et, FPS, grps[i], "Ca-level", div=div, fill=fill)
-        #ax[2,i].legend_.remove()
-        if df_lick is not None:
-            plot_activity(ax[3,i], df_lick, et, FPS, grps[i], "Licking", div=div,fill=fill)
-            #ax[3,i].legend_.remove()
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', UserWarning)
-        #fig.show()
-        return fig
+    for icol, grp in enumerate(grps):
+        ax[0,icol].axis('off')
+        for irow, df in enumerate(dfs):
+            plot_activity(ax[irow+1,icol], df, data.experiment_traits, data.FPS,
+                          grp=grp, name=names[irow], div=div, fill=fill)
+        leg = ax[1,icol].legend(loc='lower center', bbox_to_anchor=(0.5, 1.1), title=', '.join(grp))
+        if leg is not None:
+            leg.get_title().set_fontsize('large')
+            leg.get_title().set_fontweight('bold')
+    return fig
 
-def plot_epochs(df_spike, df_data, df_lick, et, etc, FPS, grps = [[]], title='', div=None, fill=None):
+def plot_epochs(data, dfs, names, grp = [], title='', div='deprecated', fill=None):
+    dfs = MakeList(dfs)
+    names = MakeList(names)
+    if len(dfs) != len(names):
+        raise ValueError('Number of DataFrames and names must be matched')
     ncol = len(epochs)
-    nrow = 3 if df_lick is None else 4
+    nrow = len(dfs)+1
     fig, ax = plt.subplots(nrow, ncol, figsize=(6*ncol,1+3*nrow), sharex=True, squeeze=False)
     fig.tight_layout(pad=3, h_pad=3)
     if len(title):
         fig.suptitle(title, fontsize=16)
-    for i in range(0, ncol):
-        epoch = epochs.values[i]
-        keys = etc.loc[:,[]].reset_index()
-        keys['learning_epoch'] = epoch
-        sel = et.reset_index(drop=True).merge(keys, on=['context', 'port', 'puffed', 'learning_epoch'], how='inner')
-        ax[0,i].set_title(epoch,y=0.8)
-        ax[0,i].axis('off')
-        plot_activity(ax[1,i], df_spike.reindex(sel.loc[:,'timestr'],level=0), et, FPS, grps[0], "Spiking", div=div, fill=fill)
-        leg = ax[1,i].legend(loc='lower center', bbox_to_anchor=(0.5, 1.1), title=', '.join(grps[0]))
-        leg.get_title().set_fontsize('large')
-        leg.get_title().set_fontweight('bold')
-        plot_activity(ax[2,i], df_data.reindex(sel.loc[:,'timestr'],level=0), et, FPS, grps[0], "Ca-level", div=div, fill=fill)
-        #ax[2,i].legend_.remove()
-        if df_lick is not None:
-            plot_activity(ax[3,i], df_lick.reindex(sel.loc[:,'timestr'].rename('time')), et, FPS, grps[0], "Licking", div=div, fill=fill)
-            #ax[3,i].legend_.remove()
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', UserWarning)
-        #fig.show()
-        return fig
+    for icol, epoch in enumerate(epochs):
+        ax[0,icol].set_title(epoch,y=0.8)
+        ax[0,icol].axis('off')
+        for irow, df in enumerate(dfs):
+            plot_activity(ax[irow+1,icol], df, data.experiment_traits, data.FPS,
+                          filter_columns=['learning_epoch'], filter_conditions=[epoch],
+                          grp=grp, name=names[irow], div=div, fill=fill)
+        leg = ax[1,icol].legend(loc='lower center', bbox_to_anchor=(0.5, 1.1), title=', '.join(grp))
+        if leg is not None:
+            leg.get_title().set_fontsize('large')
+            leg.get_title().set_fontweight('bold')
+    return fig
 
 
 def draw_transients(ax, transients, experiment_id, FPS, roi_df):
@@ -764,8 +854,8 @@ def draw_transients(ax, transients, experiment_id, FPS, roi_df):
             #ax.set_xlim(xlim), ax.set_ylim(ylim)
     except:
         pass
-    for i in range(0,len(events)):
-        ax.axvline(x=events[i]*FPS, ymin=0.0, ymax = 1.0, linewidth=1, color='k')
+    for sep in events[:-1]:
+        ax.axvline(x=sep*FPS, ymin=0.0, ymax = 1.0, linewidth=1, color='k')
     ax.set_title('Transient peaks and durations')
     ax.set_xlabel('Camera frame')
     ax.set_ylabel('Unit ID')
@@ -779,8 +869,8 @@ def draw_levels(ax, data, experiment_id, FPS, roi_df, zoom=0.5, dist=1.0):
             ax.plot(firing.T)#,c=colors)
     except:
         pass
-    for i in range(0,len(events)):
-        ax.axvline(x=events[i]*FPS, ymin=0.0, ymax = 1.0, linewidth=1, color='k')
+    for sep in events[:-1]:
+        ax.axvline(x=sep*FPS, ymin=0.0, ymax = 1.0, linewidth=1, color='k')
     ax.set_title('Raw Ca-levels')
     ax.set_xlabel('Camera frame')
     ax.set_ylabel('Unit ID')
@@ -805,7 +895,7 @@ def draw_conditions(ax, conditions, experiment_id, FPS, height=20, loc='lower ce
     import matplotlib
     a = conditions.loc[[experiment_id],['learning_epoch','context','port','puffed','session_num','day_num']]
     if cw is None:
-        cw = np.concatenate((durations[1:]*FPS,np.array([0.5,0.5])*(ax.get_xlim()[1]-events[-1]*FPS)))
+        cw = np.concatenate((durations[:-1]*FPS,np.array([0.5,0.5])*(ax.get_xlim()[1]-events[-2]*FPS)))
 
     c = a.copy()
     c.loc[:,:]='lightblue' if any(a['port'].isin(['W+',True])) else 'white'
