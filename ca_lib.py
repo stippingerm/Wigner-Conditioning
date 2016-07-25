@@ -15,19 +15,23 @@ import warnings
 
 ### General access tools
 
-class Bunch:
+class Bunch(dict):
     '''Mixed dot-access and bracket-access container'''
     def __init__(self, **kw):
         for name in kw:
             setattr(self, name, kw[name])
-    def __getitem__(self, name):
-        return self.__dict__[name]
-    def __setitem__(self, name,value):
-        self.__dict__[name]=value
-    def __repr__(self):
-        return self.__dict__.__repr__()
-    def __str__(self):
-        return self.__dict__.__str__()
+    # Hint: __getattr__ is fallback for __getattribute__ and __getitem__,
+    # __setattr__ works analogously
+    # Note: you dont want to override __getattribute__ or __setattribute__
+    # because itoverrides inherited access to dict and you'd need super()
+    def __getattr__(self, name):
+        return self.__getitem__(name)
+    def __setattr__(self, name,value):
+        return self.__setitem__(name, value)
+#    def __repr__(self):
+#        return self.__dict__.__repr__()
+#    def __str__(self):
+#        return self.__dict__.__str__()
 
 
 def test_hdf(filename):
@@ -487,7 +491,7 @@ def rev_align(data, shape):
     # TODO: using np.reshape is more efficient
     ret = data
     for axis in new_axes:
-        ret = np.expand_dims(data, axis=axis)
+        ret = np.expand_dims(ret, axis=axis)
     return ret
 
 
