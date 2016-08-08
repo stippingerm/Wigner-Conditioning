@@ -6,7 +6,7 @@ Last major bug fix on Aug 01, 2016
 
 # A Non-Parametric Bayesian Method for Inferring Hidden Causes
 F., Griffiths, T.L., Ghahramani, Z., 2006.
-Presented at the Proceedings of the Conference on Uncertainty in Artificial Intelligence.
+Proceedings of the Conference on Uncertainty in Artificial Intelligence.
 See: http://cocosci.berkeley.edu/tom/papers/ibpuai.pdf
 
 @author: Marcell Stippinger
@@ -86,6 +86,29 @@ def MakeArray(data):
         print ('Data could not be converted to numpy.ndarray')
         raise
 
+
+def plot_matrix_product(rows,M1,name1,cols,M2,name2,common,result=None,namer='result',figsize=(20,5)):
+    assert type(rows) is str and type(cols) is str and type(common) is str
+    assert type(name1) is str and type(name2) is str and type(namer) is str
+    assert type(M1) is np.ndarray and type(M2) is np.ndarray and (result is None or type(result) is np.ndarray)
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(2,2,sharex='col',sharey='row',figsize=figsize)
+    ax[0,0].axis('off')
+    ax[0,1].matshow(M2)
+    ax[0,1].set_title(name2)
+    ax[0,1].set_ylabel(common)
+    ax[1,0].matshow(M1)
+    ax[1,0].set_title(name1)
+    ax[1,0].set_xlabel(common)
+    ax[1,1].matshow(np.dot(M1,M2) if result is None else result)
+    ax[1,1].set_title(namer)
+    ax[1,1].set_xlabel(cols)
+    ax[1,1].set_ylabel(rows)
+    return fig
+
+
+### Bayesian inference
+
 class BayesianNetwork(object):
     '''Bayesian network interface:
        X: observations, shape=[n_features,n_samples]
@@ -158,7 +181,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
        effectiveness and eps the baseline probability.
        The network has edges for cause k with Bernoulli(theta[k]) where
        theta[k] are independent from Beta(alpha/K, 1).'''
-       
+
     def __init__(self, p, alpha, lamb=0.9, eps=0.01):
         '''Initialize parameters and check their domain'''
         alpha, p = float(alpha), float(p)
@@ -186,8 +209,8 @@ class BernoulliBetaAssumption(BayesianNetwork):
             counter -= 1
             if not counter:
                 raise ValueError('Could not properly initialize Z')
-                
-        if data:            
+
+        if data:
             X = bernoulli.rvs(self.P_x_YZ(Y, Z))
             return X, Y, Z
         else:
@@ -201,7 +224,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         self.Y, self.Z = self.generate(K, self.N, self.T)
         self.K_effective = np.inf
 
-        
+
     # Eq. 3 used to generate observations
     def P_x_YZ(self, Y=None, Z=None):
         '''Generate observations according to the model provided'''
@@ -216,6 +239,10 @@ class BernoulliBetaAssumption(BayesianNetwork):
         prob = 1 - np.power(1-self.lamb,pure_scalar_prod) * (1-self.eps)
         return prob
 
+    def Px(self):
+        px = normalize_p(self.P_x_YZ())
+        return px
+        
     # Eq. 5
     def logP_Z(self, Z):
         '''Probability of a binary matrix Z among matrices of the same size'''
@@ -272,7 +299,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         # number of columns which contain a 1 only in row i -> (i,1)
         ret = np.sum(singles_columns.astype(int), axis=1, keepdims=True)
         return ret
-        
+
     def get_theta(self):
         '''Measure the estimated value of theta'''
         # m[k] -> (k)
@@ -305,6 +332,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         '''Update Z conditional on binary variable a'''
         assert a in [0,1]
         # variables
+        X = self.X
         Y = self.Y
         Z = self.Z
         # theta[k]^a(1-theta[k])^(1-a) -> (i,k)
@@ -317,25 +345,26 @@ class BernoulliBetaAssumption(BayesianNetwork):
         conditional_scalar_prod = pure_scalar_prod[:,np.newaxis,:] + correction
         # similar to Eq. 3, to be multiplied along t -> (i,k,t)
         prob2 = 1 - np.power(1-self.lamb,conditional_scalar_prod) * (1-self.eps)
-        # prob1 * prod_t(prob2) -> (i,k)
-        #ret = np.log(prob1[:,:]) + np.sum(np.log(prob2),axis=-1)
-        ret = np.log(prob1[:,:]) + np.sum(np.log(bernoulli.pmf(self.X[:,np.newaxis,:],p=prob2)),axis=-1)
+        # prob1 * prod_t(P(X[i,:,t]|prob2)) -> (i,k)
+        #ret = np.log(prob1[:,:]) + np.sum(np.log(prob2),axis=-1) was wrong in the paper
+        ret = np.log(prob1[:,:]) + np.sum(np.log(bernoulli.pmf(X[:,np.newaxis,:],p=prob2)),axis=-1)
         return ret
 
     # Analogue to Eq. 10
     def P_y(self, a):
         '''z[(not i),k]==a conditional and previous Z'''
-        assert a in [0,1]
+        assert np.all((a==1)|(a==0))
         # p
         p = self.p
         # p if a==1 else 1-p
         ret = bernoulli.pmf(a,p=p)
         return ret
-        
+
     # Eq. 12
     def logP_y_XYZ(self,a):
         '''Update Y conditional on binary variable a'''
         assert a in [0,1]
+        X = self.X
         Y = self.Y
         Z = self.Z
         # p^a(1-p)^(1-a) -> ()
@@ -348,11 +377,36 @@ class BernoulliBetaAssumption(BayesianNetwork):
         conditional_scalar_prod = pure_scalar_prod[:,np.newaxis,:] + correction
         # to be multiplied along i -> (i,k,t)
         prob2 = 1 - np.power(1-self.lamb,conditional_scalar_prod) * (1-self.eps)
-        # prob1 * prod_i(prob2) -> (k,t)
-        #ret = np.log(prob1) + np.sum(np.log(prob2),axis=0)
-        ret = np.log(prob1) + np.sum(np.log(bernoulli.pmf(self.X[:,np.newaxis,:],p=prob2)),axis=0)
+        # prob1 * prod_i(P(X[i,:,t]|prob2)) -> (k,t)
+        #ret = np.log(prob1) + np.sum(np.log(prob2),axis=0) was wrong in the paper
+        ret = np.log(prob1) + np.sum(np.log(bernoulli.pmf(X[:,np.newaxis,:],p=prob2)),axis=0)
         return ret
 
+    # Eq. 12 modified for P(US|CS,...)
+    def logP_y_XZ(self,v,X=None,given_i=slice(None)):
+        '''Enumerate all Y conditional on binary vector v'''
+        # In this function, only X has trial-specific details
+        # If unknown entries of X are set to the same value then
+        # it should give as googd results as omitting them
+        # but we implement it for P=0 weight cases
+        assert np.all((v==1)|(v==0))
+        assert len(v) == self.K
+        if type(given_i) is not slice:
+            # conversion is required for boolean slicing
+            given_i = np.array(given_i)
+        if X is None:
+            X = self.X
+        Z = self.Z
+        # p^a(1-p)^(1-a) -> (k)
+        prob1 = self.P_y(v)
+        # Z[i,k]@v[k,:] -> (i,1)
+        pure_scalar_prod = np.dot(Z[:,:],v[:,np.newaxis])
+        # to be multiplied along i -> (i,1)
+        prob2 = 1 - np.power(1-self.lamb,pure_scalar_prod) * (1-self.eps)
+        # prod_k(prob1) * prod_i(P(X[i,t]|prob2)) -> (t)
+        ret = np.sum(np.log(prob1)) + np.sum(np.log(bernoulli.pmf(X[given_i,:],p=prob2[given_i,:])),axis=0)
+        return ret
+        
     # Eq. 14 (including Eq. 15)
     def logP_x_YZK(self, K_new):
         '''Do Bayes on x conditional on K, Y and Z'''
@@ -389,7 +443,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         # m[(not i),k] -> (i,k)
         m_ = BernoulliBetaAssumption.m_(self.Z)
         # use P(z[i,k]=a|X,Y,Z[(not i,k)]) -> (i,k)
-        Pz = self.p0_per_sum_p(logp=[self.logP_z_XYZ(1), self.logP_z_XYZ(0)])
+        Pz = p0_per_sum_p(logp=[self.logP_z_XYZ(1), self.logP_z_XYZ(0)])
         # sample z[i,k]
         try:
             z = bernoulli.rvs(p=Pz)
@@ -408,7 +462,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         # sample values for K (we need to constrain it to remain tractable)
         K_new = np.arange(K_new_max).astype(int)
         # P(K_new[i]|...) -> (sample,i)
-        PK = self.normalize_p(logp=self.logP_K_XYZ(K_new),axis=0)
+        PK = normalize_p(logp=self.logP_K_XYZ(K_new),axis=0)
         # sample K
         def choose(p):
             try:
@@ -417,7 +471,6 @@ class BernoulliBetaAssumption(BayesianNetwork):
                 print(p)
                 raise
         K = np.apply_along_axis(choose, 0, PK)
-        print(K)
         # number of new columns to be added
         K_add = np.sum(K)
         Z = np.hstack(( self.Z, np.zeros((self.N,K_add)) ))
@@ -432,7 +485,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
     def Gibbs_sample_Y(self):
         '''Sample Y'''
         # use P(y[k,t]=a|X,Y,Z[(not k,t)]) -> (k,t)
-        Py = self.p0_per_sum_p(logp=[self.logP_y_XYZ(1), self.logP_y_XYZ(0)])
+        Py = p0_per_sum_p(logp=[self.logP_y_XYZ(1), self.logP_y_XYZ(0)])
         # sample y[k,t]
         y = bernoulli.rvs(p=Py)
         self.Y = y
@@ -445,6 +498,10 @@ class BernoulliBetaAssumption(BayesianNetwork):
         m = BernoulliBetaAssumption.m(Z,keepdims=False)
         # keep colmns with m[k]>0 only
         keep = m>0
+        # do not delete all columns, it won't work
+        # FIXME: at some point Y still might get reduced to 1D
+        if ~np.any(keep):
+            keep[0]=True
         # Z[i,k]
         Z = np.compress(keep,Z,axis=1)
         # Y[k,t]
