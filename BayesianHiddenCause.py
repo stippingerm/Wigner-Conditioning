@@ -116,27 +116,42 @@ class BayesianNetwork(object):
        A: adjacency, shape=[n_features,n_features]
        Z: causality, shape=[n_features,n_causes]'''
 
-    def observe(self, X):
+    def observe(self, X, amortisation=None):
         '''Cumulate observations, n_features must be the same as before'''
         X = np.array(X, ndmin=1)
-        if self.X is None:
-            if X.ndim == 1:
-                self.X = np.expand_dims(X, axis=1)
-            elif X.ndim == 2:
-                self.X = X
-            else:
-                raise ValueError('X must be 1 or 2 dimensional')
-        else:
+        if X.ndim == 1:
+            X = np.expand_dims(X, axis=1)
+        elif X.ndim > 2:
+            raise ValueError('X must be 1 or 2 dimensional')
+            
+        if len(self.X):
             self.X = np.row_stack((self.X,X))
+        else:
+            self.X = X
+        
+        new_samples = X.shape[1]
         self.px = np.zeros_like(X)
+        if amortisation is None:
+            loga = -np.log(2.0) / self.decay_time * np.ones((new_samples,))
+        else:
+            assert np.all((0<amortisation)&(0<amortisation<=1))
+            loga = np.broadcast_to(np.log(amortisation), (new_samples,))
+        self.loga = np.append(self.loga,loga)
+        #n_step = self.T - 1.0
+        #start = -np.log(2) * (n_step/decay_time)
+        #self.logw = np.linspace(start,0.0,self.T)
 
-    def __init__(self):
+
+    def __init__(self, decay_time = np.inf):
         '''Initialize with empty arrays'''
+        assert decay_time > 0
         self.A = np.ndarray((0,0))
         self.X = np.ndarray((0,0))
         self.Y = np.ndarray((0,0))
         self.Z = np.ndarray((0,0))
         self.px = np.ndarray((0,0))
+        self.loga = np.ndarray((0,))
+        self.decay_time = decay_time
 
     def __getattr__(self, name):
         '''Provide calculated values'''
@@ -146,20 +161,34 @@ class BayesianNetwork(object):
             return self.X.shape[1]
         if name in ['n_causes', 'K']:
             return self.Y.shape[0]
+        if name in ['logw']:
+            return np.cumsum(self.loga[::-1])[::-1]
+        if name in ['w']:
+            return np.exp(self.logw)
+        #raise AttributeError
 
+    def __setattr__(self, name, value):
+        '''Protect calculated values'''
+        if name in ['n_features', 'N',
+                     'n_samples', 'T',
+                     'n_causes', 'K',
+                     'logw', 'w']:
+            raise AttributeError('Cannot set calulated value')
+        super(BayesianNetwork,self).__setattr__(name,value)
+            
     def get_p(self):
         return float(np.sum(self.Y))/np.prod(self.Y.shape)
 
 def lof(Z):
     '''left-ordered form'''
     # move first row to the last, second to the second last, etc.
-    # because default ordering is according to last row but we want first
+    # because default ordering is according to last row but we want acc. to first
     A = np.flipud(Z)
     # sort
     s = np.lexsort(A)
     A = Z[:,s]
     # move first column to the last, second to the second last, etc.
-    # because default ordering is increasing but we want decreasing
+    # because default ordering is increasing but we want decreasing order
     A = np.fliplr(A)
     return A
 
@@ -171,7 +200,7 @@ def remove_empty(Z, axis=0):
         raise ValueError('Only positive axis id is accepted')
     keep = np.any(Z, axis=axis)
     # take, select, choose work differently, fancy indexing tries flattened...
-    ret = np.compress(keep,Z,axis=1-axis)
+    ret = np.compress(keep, Z, axis=1-axis)
     return ret
 
 class BernoulliBetaAssumption(BayesianNetwork):
@@ -182,7 +211,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
        The network has edges for cause k with Bernoulli(theta[k]) where
        theta[k] are independent from Beta(alpha/K, 1).'''
 
-    def __init__(self, p, alpha, lamb=0.9, eps=0.01):
+    def __init__(self, p, alpha, lamb=0.9, eps=0.01, **kwarg):
         '''Initialize parameters and check their domain'''
         alpha, p = float(alpha), float(p)
         lamb, eps = float(lamb), float(eps)
@@ -192,6 +221,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         assert (0<=eps) and (eps<1)
         self.alpha, self.p = alpha, p
         self.lamb, self.eps = lamb, eps
+        super(BernoulliBetaAssumption, self).__init__(**kwarg)
 
     def generate(self, K, N, T, data=False):
         '''Generate a model and corresponding datawhere the network is
@@ -345,9 +375,12 @@ class BernoulliBetaAssumption(BayesianNetwork):
         conditional_scalar_prod = pure_scalar_prod[:,np.newaxis,:] + correction
         # similar to Eq. 3, to be multiplied along t -> (i,k,t)
         prob2 = 1 - np.power(1-self.lamb,conditional_scalar_prod) * (1-self.eps)
+        # prob2 ^ w, to be multiplied along t -> (i,k,t)
+        wprob2 = np.log(bernoulli.pmf(X[:,np.newaxis,:],p=prob2)) * (
+                    self.w[np.newaxis, np.newaxis, :])
+        #wprob2 = np.log(prob2) * self.w[...] was wrong in the paper
         # prob1 * prod_t(P(X[i,:,t]|prob2)) -> (i,k)
-        #ret = np.log(prob1[:,:]) + np.sum(np.log(prob2),axis=-1) was wrong in the paper
-        ret = np.log(prob1[:,:]) + np.sum(np.log(bernoulli.pmf(X[:,np.newaxis,:],p=prob2)),axis=-1)
+        ret = np.log(prob1[:,:]) + np.sum(wprob2,axis=-1)
         return ret
 
     # Analogue to Eq. 10
@@ -377,9 +410,12 @@ class BernoulliBetaAssumption(BayesianNetwork):
         conditional_scalar_prod = pure_scalar_prod[:,np.newaxis,:] + correction
         # to be multiplied along i -> (i,k,t)
         prob2 = 1 - np.power(1-self.lamb,conditional_scalar_prod) * (1-self.eps)
+        # prob2 ^ w, to be multiplied along i -> (i,k,t)
+        wprob2 = np.log(bernoulli.pmf(X[:,np.newaxis,:],p=prob2)) * (
+                    self.w[np.newaxis, np.newaxis, :])
+        #wprob2 = np.log(prob2) * self.w[...] was wrong in the paper
         # prob1 * prod_i(P(X[i,:,t]|prob2)) -> (k,t)
-        #ret = np.log(prob1) + np.sum(np.log(prob2),axis=0) was wrong in the paper
-        ret = np.log(prob1) + np.sum(np.log(bernoulli.pmf(X[:,np.newaxis,:],p=prob2)),axis=0)
+        ret = np.log(prob1) + np.sum(wprob2,axis=0)
         return ret
 
     # Eq. 12 modified for P(US|CS,...)
@@ -403,8 +439,10 @@ class BernoulliBetaAssumption(BayesianNetwork):
         pure_scalar_prod = np.dot(Z[:,:],v[:,np.newaxis])
         # to be multiplied along i -> (i,1)
         prob2 = 1 - np.power(1-self.lamb,pure_scalar_prod) * (1-self.eps)
+        # prob2, to be multiplied along i -> (i,1)
+        uprob2 = np.log(bernoulli.pmf(X[given_i,:],p=prob2[given_i,:]))
         # prod_k(prob1) * prod_i(P(X[i,t]|prob2)) -> (t)
-        ret = np.sum(np.log(prob1)) + np.sum(np.log(bernoulli.pmf(X[given_i,:],p=prob2[given_i,:])),axis=0)
+        ret = np.sum(np.log(prob1)) + np.sum(uprob2,axis=0)
         return ret
         
     # Eq. 14 (including Eq. 15)
@@ -419,8 +457,11 @@ class BernoulliBetaAssumption(BayesianNetwork):
         # P(x[i,t]==1|...) in Eq. 15. -> (sample,i,t)
         prob = 1 - (1-self.eps) * eta * np.power(1-self.lamb*p, K_new[:,np.newaxis,np.newaxis])
         self.px = prob[0]
+        # P[sample](x[i,t]==1|...) ^ w[:,:,t] -> (sample,i,t)
+        wprob = np.log(bernoulli.pmf(self.X,p=prob)) * (
+                    self.w[np.newaxis, np.newaxis, :])
         # P(X[i,:]|...) in Eq. 14. -> (sample,i)
-        ret = np.sum(np.log(bernoulli.pmf(self.X,p=prob)), axis=-1)
+        ret = np.sum(wprob, axis=-1)
         return ret
 
     # Eq. 13

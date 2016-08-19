@@ -28,6 +28,8 @@ class Bunch(dict):
         return self.__getitem__(name)
     def __setattr__(self, name,value):
         return self.__setitem__(name, value)
+    def __delattr__(self, name):
+        return self.__delitem__(name)
 #    def __repr__(self):
 #        return self.__dict__.__repr__()
 #    def __str__(self):
@@ -251,21 +253,39 @@ def __load_fluor(mydir):
 
 def __create_mask(df, index=None, columns=None, threshold=0.9):
     '''Provide summary on data availability'''
+    # A mask to with 0-s at defined points and NaN-s elsewhere
+    mask = (df*0.0).reindex(index=index, columns=columns)
+    # A boolean mask to hide NaN-s
+    #mask = (mask+1.0).fillna(0.0).astype(bool)
+    
+    # Number of frames, tirals and ROIs
+    n_frames = len(columns)
+    n_trials, n_rois = len(index.levels[0]), len(index.levels[1])
+
+    ### sum_{i,j} var    
     # How many ROIs are present in the given camera frame of a trial
-    time_mask = df.reset_index().groupby(['time']).count()
-    # Set True where at least 90% are present
-    # NOTE: we mean 90% of ROIs that were not entirely silent in the trial
-    time_mask = time_mask.drop(['roi_id'],axis=1).subtract(threshold*time_mask['roi_id'],axis=0)<0
-    # In how many trials is the ROI present in the given camera frame
-    roi_mask = df.reset_index().groupby(['roi_id']).count()
-    # Set True those that are present in at least 90%
-    # NOTE: we mean 90% of trials where the ROI was not entirely silent
-    roi_mask = roi_mask.drop(['time'],axis=1).subtract(threshold*roi_mask['time'],axis=0)<0
-    # Set all numeric entries to 0 (keep NaNs)
-    time_roi_mask = df*0.0
-    # Add all missing combinations with NaNs
-    time_roi_mask = time_roi_mask.reindex(index=index, columns=columns)
-    return time_mask, roi_mask, time_roi_mask
+    s_trial_frame = df.reset_index().drop('roi_id', axis=1).groupby(['time']).count()
+    # In how many trials the ROI is present in the given camera frame
+    s_roi_frame = df.reset_index().drop('time', axis=1).groupby(['roi_id']).count()
+    # In how many frames of the trial a given ROI is present
+    s_trial_roi = df.count(axis=1).unstack(fill_value=0)
+    
+    
+    ### (sum_{i} any_{j} var > sum_{i} threshold), there are 6 such stats
+    # In how many trials the ROI is present
+    # c_trials_for_roi
+    #c_roi = df.any(axis=1).unstack('roi_id').count()
+    # How many ROIs are present in the trial
+    # c_rois_in_trial
+    #c_trial = df.any(axis=1).unstack('time').count()
+    # How many frames are present in the trial
+    # c_frames_in_trial
+    #c_frame = df.any(axis=0, level='time').count(axis=1)
+    
+    # Reliable ROIs
+    mask_roi = (s_trial_roi > threshold*n_frames).sum(axis=0) > threshold*n_trials
+    
+    return mask, mask_roi
 
 
 def __add_metadata(data, raw):
@@ -287,7 +307,7 @@ def __add_metadata(data, raw):
                 ('Spiking',np.array(range(0,data.max_nframe))),names=('','frame'))
     data.icol = pd.Index(np.array(range(0,data.max_nframe)),name='frame')
 
-    data.time_mask, data.roi_mask, data.time_roi_mask = __create_mask(raw, data.mirow, data.icol)
+    data.mask, data.mask_roi = __create_mask(raw, data.mirow, data.icol)
     return data
 
 
@@ -313,9 +333,9 @@ def spikes_to_timeseries(data, transients):
     sp = spikes[['stop_frame','count']].rename(columns={'stop_frame':'frame'}).pivot(columns='frame').fillna(0)
     df_spike = df_spike.add(-sp['count'], fill_value=0)
 
-    # cumulate, conversion to int is not adviced if using NaNs
+    # cumulate, conversion to int is not advised if using NaNs
     df_spike = df_spike.cumsum(axis=1).astype(int)
-    df_spike = df_spike + data.time_roi_mask
+    df_spike = df_spike + data.mask
 
     return df_spike
 
