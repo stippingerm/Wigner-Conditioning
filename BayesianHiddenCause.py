@@ -3,6 +3,7 @@
 Created on Jul 27, 2016
 Last major modification Jul 29, 2016
 Last major bug fix on Aug 01, 2016
+Last major revision Aug 29, 2016
 
 # A Non-Parametric Bayesian Method for Inferring Hidden Causes
 F., Griffiths, T.L., Ghahramani, Z., 2006.
@@ -70,7 +71,8 @@ def normalize_p(p=None, logp=None, axis=None):
     if np.any(np.all(ret==0, axis=axis)):
         import warnings
         print('p',p,'logp',logp)
-        warnings.warn('The provided values cannot be normalized along axis=%s'%axis)
+        warnings.warn(
+            'The provided values cannot be normalized along axis=%s'%axis)
     return ret
 
 
@@ -87,10 +89,16 @@ def MakeArray(data):
         raise
 
 
-def plot_matrix_product(rows,M1,name1,cols,M2,name2,common,result=None,namer='result',figsize=(20,5)):
+def plot_matrix_product(rows, M1, name1, cols, M2, name2,
+                        common, result=None, namer='result', figsize=(20,5)):
+    '''Visualize a matrix product'''
+    # names of axes
     assert type(rows) is str and type(cols) is str and type(common) is str
+    # names of matrices
     assert type(name1) is str and type(name2) is str and type(namer) is str
-    assert type(M1) is np.ndarray and type(M2) is np.ndarray and (result is None or type(result) is np.ndarray)
+    # matrices
+    assert type(M1) is np.ndarray and type(M2) is np.ndarray and (
+                        result is None or type(result) is np.ndarray)
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(2,2,sharex='col',sharey='row',figsize=figsize)
     ax[0,0].axis('off')
@@ -114,7 +122,9 @@ class BayesianNetwork(object):
        X: observations, shape=[n_features,n_samples]
        Y: causes, shape=[n_causes,n_samples]
        A: adjacency, shape=[n_features,n_features]
-       Z: causality, shape=[n_features,n_causes]'''
+       Z: causality, shape=[n_features,n_causes]
+       N==n_features, T==n_samples (n_trials), K==n_causes
+       i€(1,...,N), t€(1,...,T), k€(1,...,K)'''
 
     def observe(self, X, amortisation=None):
         '''Cumulate observations, n_features must be the same as before'''
@@ -141,16 +151,23 @@ class BayesianNetwork(object):
         #start = -np.log(2) * (n_step/decay_time)
         #self.logw = np.linspace(start,0.0,self.T)
 
+    def clear(self):
+        '''Clear all observations'''
+        self.X = np.ndarray((0,0))
+        self.Y = np.ndarray((0,0))
+        self.px = np.ndarray((0,0))
+        self.loga = np.ndarray((0,))
+        
+    def reset(self):
+        '''Reset inner state'''
+        self.clear()
+        self.A = np.ndarray((0,0))
+        self.Z = np.ndarray((0,0))
 
     def __init__(self, decay_time = np.inf):
         '''Initialize with empty arrays'''
         assert decay_time > 0
-        self.A = np.ndarray((0,0))
-        self.X = np.ndarray((0,0))
-        self.Y = np.ndarray((0,0))
-        self.Z = np.ndarray((0,0))
-        self.px = np.ndarray((0,0))
-        self.loga = np.ndarray((0,))
+        self.reset()
         self.decay_time = decay_time
 
     def __getattr__(self, name):
@@ -177,23 +194,24 @@ class BayesianNetwork(object):
         super(BayesianNetwork,self).__setattr__(name,value)
             
     def get_p(self):
+        '''Measure activation'''
         return float(np.sum(self.Y))/np.prod(self.Y.shape)
 
 def lof(Z):
-    '''left-ordered form'''
+    '''Left-ordered form'''
     # move first row to the last, second to the second last, etc.
     # because default ordering is according to last row but we want acc. to first
-    A = np.flipud(Z)
+    Q = np.flipud(Z)
     # sort
-    s = np.lexsort(A)
-    A = Z[:,s]
+    s = np.lexsort(Q)
+    Q = Z[:,s]
     # move first column to the last, second to the second last, etc.
     # because default ordering is increasing but we want decreasing order
-    A = np.fliplr(A)
-    return A
+    Q = np.fliplr(Q)
+    return Q
 
 def remove_empty(Z, axis=0):
-    '''remove columns with zeros'''
+    '''Remove columns with zeros from a 2d matrix'''
     if Z.ndim != 2:
         raise ValueError('The array must be 2d')
     if axis < 0:
@@ -203,16 +221,20 @@ def remove_empty(Z, axis=0):
     ret = np.compress(keep, Z, axis=1-axis)
     return ret
 
+# Model parameters: alpha, p, lambda, epsilon
+# Priors on: K (number of causes), Y (activation), Z (network)
+# Observation: X
 class BernoulliBetaAssumption(BayesianNetwork):
     '''Bayesian inference assuming that all causes are active independently
        with probability p and they are related to observables via a noisy-OR
        distribution according to the network of relations: lambda describes
        effectiveness and eps the baseline probability.
        The network has edges for cause k with Bernoulli(theta[k]) where
-       theta[k] are independent from Beta(alpha/K, 1).'''
+       theta[k] are independent from Beta(alpha/K, 1).
+       Call Gibbs_prepare first, then Gibbs_iterate as many times as needed'''
 
     def __init__(self, p, alpha, lamb=0.9, eps=0.01, **kwarg):
-        '''Initialize parameters and check their domain'''
+        '''Initialize model parameters and check their domain'''
         alpha, p = float(alpha), float(p)
         lamb, eps = float(lamb), float(eps)
         assert (0<alpha)
@@ -224,8 +246,8 @@ class BernoulliBetaAssumption(BayesianNetwork):
         super(BernoulliBetaAssumption, self).__init__(**kwarg)
 
     def generate(self, K, N, T, data=False):
-        '''Generate a model and corresponding datawhere the network is
-           established with rejection-sampling from the Indian Buffet Process.'''
+        '''Generate a model and corresponding data where the Bayesian network is
+           established via rejection-sampling from the Indian Buffet Process.'''
         # causes active
         Y = bernoulli.rvs(self.p, size=(K, T))
         # rejection-sample the network
@@ -240,12 +262,14 @@ class BernoulliBetaAssumption(BayesianNetwork):
             if not counter:
                 raise ValueError('Could not properly initialize Z')
 
+        # generate observations if requested
         if data:
             X = bernoulli.rvs(self.P_x_YZ(Y, Z))
             return X, Y, Z
         else:
             return Y, Z
 
+    # Initialization for Algo 2
     def Gibbs_prepare(self, K=0):
         '''Initialize Gibbs-sampler in a random state with K causes.
            The number of causes to be learned is potentially unlimited.'''
@@ -257,7 +281,8 @@ class BernoulliBetaAssumption(BayesianNetwork):
 
     # Eq. 3 used to generate observations
     def P_x_YZ(self, Y=None, Z=None):
-        '''Generate observations according to the model provided'''
+        '''Generate observations from he noisy-OR distribution according
+           to the model and the latent activity provided'''
         # variables
         if Y is None:
             Y = self.Y
@@ -269,22 +294,26 @@ class BernoulliBetaAssumption(BayesianNetwork):
         prob = 1 - np.power(1-self.lamb,pure_scalar_prod) * (1-self.eps)
         return prob
 
-    def Px(self):
-        px = normalize_p(self.P_x_YZ())
+    # Verify the models current predictions
+    def Px(self, Y=None, Z=None):
+        '''Rel. likelihood of observing feature i in trial t: P(x[i,t]==1|Y,Z)'''
+        px = normalize_p(self.P_x_YZ(Y,Z))
         return px
         
-    # Eq. 5
+    # Eq. 5 prior of finite model
     def logP_Z(self, Z):
-        '''Probability of a binary matrix Z among matrices of the same size'''
+        '''Log likelihood of a binary matrix Z among matrices of the same size'''
         N, K = Z.shape
         m = np.sum(Z, axis=0)
         a = self.alpha
-        log_p_k = np.log(a/K) + gammaln(m+a/K) + gammaln(N-m+1) - gammaln(N+1+(a/K))
+        # probability atom
+        log_p_k = np.log(a/K) + gammaln(m+a/K) + gammaln(N-m+1) - gammaln(N+1+a/K)
         return np.sum(log_p_k)
 
-    # Eq. 5b
+    # Eq. 5b prior of infinite model
     def logP_Z_inf(self, Z):
-        '''Probability of a binary matrix Z among matrices of unlimited columns (causes)'''
+        '''Log likelihood of a binary matrix Z among matrices of unlimited number
+           of columns (causes)'''
         import itertools
         Z = lof(Z)
         Z = remove_empty(Z)
@@ -304,10 +333,10 @@ class BernoulliBetaAssumption(BayesianNetwork):
         return ret
 
     @staticmethod
-    def m(Z,keepdims=True):
+    def m(Z, keepdims=True):
         '''Count out-edges of cause k'''
         # m[k] -> (k)
-        m = np.sum(Z,axis=0,keepdims=keepdims)
+        m = np.sum(Z, axis=0, keepdims=keepdims)
         return m
 
     @staticmethod
@@ -340,9 +369,9 @@ class BernoulliBetaAssumption(BayesianNetwork):
         theta = (m + AperK) / float(self.N + AperK)
         return theta
 
-    # Eq. 10
+    # Eq. 10 resulting from the prior on Z
     def P_z_Z(self, a):
-        '''z[(not i),k]==a conditional and previous Z'''
+        '''Prior z[i,k]==a conditional a and previous Z, i.e., z[(not i),k]'''
         assert a in [0,1]
         # variables, alpha must be float, K effective might be inf
         Z = self.Z
@@ -354,12 +383,12 @@ class BernoulliBetaAssumption(BayesianNetwork):
         # theta[k] are vectors -> is a matrix (i,k)
         theta = (m_ + AperK) / (N + AperK)
         # theta if a==1 else 1-theta -> (i,k)
-        ret = bernoulli.pmf(a,p=theta)
+        ret = bernoulli.pmf(a, p=theta)
         return ret
 
-    # Eq. 11
-    def logP_z_XYZ(self,a):
-        '''Update Z conditional on binary variable a'''
+    # Eq. 11 used for updating Z
+    def logP_z_XYZ(self, a):
+        '''Enumerate the log posterior: element of Z equals binary variable a'''
         assert a in [0,1]
         # variables
         X = self.X
@@ -383,9 +412,9 @@ class BernoulliBetaAssumption(BayesianNetwork):
         ret = np.log(prob1[:,:]) + np.sum(wprob2,axis=-1)
         return ret
 
-    # Analogue to Eq. 10
+    # Analogue to Eq. 10 resulting from the prior on Y
     def P_y(self, a):
-        '''z[(not i),k]==a conditional and previous Z'''
+        '''Prior y[k,t]==a conditional a'''
         assert np.all((a==1)|(a==0))
         # p
         p = self.p
@@ -393,9 +422,9 @@ class BernoulliBetaAssumption(BayesianNetwork):
         ret = bernoulli.pmf(a,p=p)
         return ret
 
-    # Eq. 12
-    def logP_y_XYZ(self,a):
-        '''Update Y conditional on binary variable a'''
+    # Eq. 12 used for updating Y
+    def logP_y_XYZ(self, a):
+        '''Enumerate the log posterior: element of Y equals binary variable a'''
         assert a in [0,1]
         X = self.X
         Y = self.Y
@@ -419,12 +448,15 @@ class BernoulliBetaAssumption(BayesianNetwork):
         return ret
 
     # Eq. 12 modified for P(US|CS,...)
-    def logP_y_XZ(self,v,X=None,given_i=slice(None)):
-        '''Enumerate all Y conditional on binary vector v'''
+    def logP_y_XZ(self, v, X=None, Z=None, given_i=slice(None)):
+        '''Enumerate all Y considering only features in given_i and conditional
+           on the same binary vector v used as columns of Y for all trials'''
         # In this function, only X has trial-specific details
-        # If unknown entries of X are set to the same value then
-        # it should give as googd results as omitting them
-        # but we implement it for P=0 weight cases
+        # If unknown entries of X, i.e. given_i==false elements,
+        # are set to the same value then it should give as good
+        # results as omitting them as far as we can condition on
+        # zero-measure sets (therefore we rather implement this
+        # function for P=0 weight cases)
         assert np.all((v==1)|(v==0))
         assert len(v) == self.K
         if type(given_i) is not slice:
@@ -432,7 +464,8 @@ class BernoulliBetaAssumption(BayesianNetwork):
             given_i = np.array(given_i)
         if X is None:
             X = self.X
-        Z = self.Z
+        if Z is None:
+            Z = self.Z
         # p^a(1-p)^(1-a) -> (k)
         prob1 = self.P_y(v)
         # Z[i,k]@v[k,:] -> (i,1)
@@ -447,7 +480,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         
     # Eq. 14 (including Eq. 15)
     def logP_x_YZK(self, K_new):
-        '''Do Bayes on x conditional on K, Y and Z'''
+        '''Likelihood of x conditional on K, Y and Z'''
         # K_new must be a vector containing sampled integer values
         p = self.p
         Y = self.Y
@@ -455,7 +488,8 @@ class BernoulliBetaAssumption(BayesianNetwork):
         # (1-lambda)^(Z[i,k]@Y[k,t]) -> (i,t)
         eta = np.power(1-self.lamb,np.dot(Z[:,:],Y[:,:]))
         # P(x[i,t]==1|...) in Eq. 15. -> (sample,i,t)
-        prob = 1 - (1-self.eps) * eta * np.power(1-self.lamb*p, K_new[:,np.newaxis,np.newaxis])
+        prob = 1 - (1-self.eps) * eta * np.power(1-self.lamb*p,
+                                                K_new[:,np.newaxis,np.newaxis])
         self.px = prob[0]
         # P[sample](x[i,t]==1|...) ^ w[:,:,t] -> (sample,i,t)
         wprob = np.log(bernoulli.pmf(self.X,p=prob)) * (
@@ -466,7 +500,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
 
     # Eq. 13
     def logP_K_XYZ(self, K_new):
-        '''Update K conditional on Y and Z'''
+        '''Posterior of K conditional on Y and Z'''
         # K_new must be a vector containing sampled integer values
         alpha = self.alpha
         N = self.N
@@ -479,7 +513,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         return ret
 
     # Algo 2, lines 3-10
-    def Gibbs_sample_Z(self):
+    def __Gibbs_sample_Z(self):
         '''Sample Z'''
         # m[(not i),k] -> (i,k)
         m_ = BernoulliBetaAssumption.m_(self.Z)
@@ -496,7 +530,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         self.Z = z
 
     # Algo 2, lines 11-12
-    def Gibbs_sample_K(self):
+    def __Gibbs_sample_K(self):
         '''Sample K'''
         # maximum allowed value of new causes
         K_new_max = 10
@@ -523,7 +557,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         self.Y, self.Z = Y, Z
 
     # Algo 2, lines 13-15 and 18-20
-    def Gibbs_sample_Y(self):
+    def __Gibbs_sample_Y(self):
         '''Sample Y'''
         # use P(y[k,t]=a|X,Y,Z[(not k,t)]) -> (k,t)
         Py = p0_per_sum_p(logp=[self.logP_y_XYZ(1), self.logP_y_XYZ(0)])
@@ -532,7 +566,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         self.Y = y
 
     # Algo 2, removal
-    def Gibbs_removal(self):
+    def __Gibbs_removal(self):
         '''Remove unused causes'''
         Z = self.Z
         Y = self.Y
@@ -553,11 +587,11 @@ class BernoulliBetaAssumption(BayesianNetwork):
     # Algo 2
     def Gibbs_iterate(self):
         '''Iterate 1 cycle'''
-        self.Gibbs_sample_Z()
+        self.__Gibbs_sample_Z()
         #print ('N', self.N, 'K', self.K, 'T', self.T)
-        self.Gibbs_sample_K()
+        self.__Gibbs_sample_K()
         #print ('N', self.N, 'K', self.K, 'T', self.T)
-        self.Gibbs_sample_Y()
+        self.__Gibbs_sample_Y()
         #print ('N', self.N, 'K', self.K, 'T', self.T)
-        self.Gibbs_removal()
+        self.__Gibbs_removal()
         #print ('N', self.N, 'K', self.K, 'T', self.T)
