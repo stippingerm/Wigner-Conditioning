@@ -52,25 +52,36 @@ def normalize_p(p=None, logp=None, axis=None):
     if logp is None:
         p = np.array(p, ndmin=1)
         assert np.all(p>=0)
+        # prescale
+        s = np.max(p)
+        if np.isfinite(s):
+            p = (1.0/s) * p
         ret = p / np.sum(p, axis=axis)
     else:
-        import warnings
         logp = np.array(logp, ndmin=1)
+        assert np.all(logp<1)
+        # prescale
+        s = np.max(logp)
+        if np.isfinite(s):
+            logp = logp - np.max(logp)
+        # prepare reference
         if axis is None:
             flat = logp.ravel()
         else:
             flat = np.swapaxes(np.expand_dims(logp, axis=-1), axis, -1)
-        #assert logp.ndim == 1
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
+            # flat.shape==[i_1,i_2,...,i_{a-1},  1,  i_{a+1},...,i_n, i_a]
+            # logp.shape==[i_1,i_2,...,i_{a-1}, i_a, i_{a+1},...,i_n,  1 ]
+            # broadcast them in diff, then sum over (and eliminate) last axis
+            # p_0 / sum_i p_i = ... = ( sum_i exp(ln p_i - ln p_0) )^(-1)
             frac = np.exp(flat - np.expand_dims(logp, axis=-1))
-            # nans come from (-inf-(-inf)), we could safely set to inf
-            # since -inf corresponds to 0 probability
-            #frac[np.isnan(frac)] = np.inf
-            ret = 1.0 / np.sum(frac,axis=-1)
+            ret = 1.0 / np.sum(frac, axis=-1)
+        # nans come from (-inf-(-inf)), we could safely set to inf
+        # since -inf corresponds to 0 probability
+        #frac[np.isnan(frac)] = np.inf
         ret[logp == -np.inf] = 0
     if np.any(np.all(ret==0, axis=axis)):
-        import warnings
         print('p',p,'logp',logp)
         warnings.warn(
             'The provided values cannot be normalized along axis=%s'%axis)

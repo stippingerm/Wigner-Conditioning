@@ -87,7 +87,7 @@ def store_to_hdf(filename, data):
                     else:
                         df = pd.Series([value])
                         anidb['/val/'+key] = df
-                        
+
                 #assert len(w) == 1
                 if (len(w)):
                     print (w[-1].category, 'when storing', key)
@@ -118,7 +118,7 @@ def read_from_hdf(filename, data = {}):
             else:
                 raise AttributeError('dtype not recognized')
     return data
-                    
+
 def MakeFrame(data, index=None, columns=None):
     if type(data) is pd.DataFrame:
         return data
@@ -215,7 +215,7 @@ def pd_get_meta(df, storename='metadata', fieldname=None, default=None):
         return df
     else:
         return current.get(fieldname, default)
-    
+
 def __format_experiment_traits(df):
     '''Translate traits to human readable notation'''
     from datetime import datetime as dt
@@ -257,20 +257,20 @@ def __create_mask(df, index=None, columns=None, threshold=0.9):
     mask = (df*0.0).reindex(index=index, columns=columns)
     # A boolean mask to hide NaN-s
     #mask = (mask+1.0).fillna(0.0).astype(bool)
-    
+
     # Number of frames, tirals and ROIs
     n_frames = len(columns)
     n_trials, n_rois = len(index.levels[0]), len(index.levels[1])
 
-    ### sum_{i,j} var    
+    ### sum_{i,j} var
     # How many ROIs are present in the given camera frame of a trial
     s_trial_frame = df.reset_index().drop('roi_id', axis=1).groupby(['time']).count()
     # In how many trials the ROI is present in the given camera frame
     s_roi_frame = df.reset_index().drop('time', axis=1).groupby(['roi_id']).count()
     # In how many frames of the trial a given ROI is present
     s_trial_roi = df.count(axis=1).unstack(fill_value=0)
-    
-    
+
+
     ### (sum_{i} any_{j} var > sum_{i} threshold), there are 6 such stats
     # In how many trials the ROI is present
     # c_trials_for_roi
@@ -281,10 +281,10 @@ def __create_mask(df, index=None, columns=None, threshold=0.9):
     # How many frames are present in the trial
     # c_frames_in_trial
     #c_frame = df.any(axis=0, level='time').count(axis=1)
-    
+
     # Reliable ROIs
     mask_roi = (s_trial_roi > threshold*n_frames).sum(axis=0) > threshold*n_trials
-    
+
     return mask, mask_roi
 
 
@@ -324,13 +324,16 @@ def spikes_to_timeseries(data, transients):
     df_spike = pd.DataFrame(data=0,index=data.mirow,columns=data.icol)
 
     # select spike data
-    spikes = transients.loc[transients['in_motion_period']==False,['start_frame','stop_frame']]
+    sel = transients['in_motion_period']==False
+    spikes = transients.loc[sel,['start_frame','stop_frame']]
     spikes['count']=1
 
     # fill in spike start and stop points (rename column to keep columns.name in df_spike)
-    sp = spikes[['start_frame','count']].rename(columns={'start_frame':'frame'}).pivot(columns='frame').fillna(0)
+    sp = spikes[['start_frame','count']].rename(
+                columns={'start_frame':'frame'}).pivot(columns='frame').fillna(0)
     df_spike = df_spike.add(sp['count'], fill_value=0)
-    sp = spikes[['stop_frame','count']].rename(columns={'stop_frame':'frame'}).pivot(columns='frame').fillna(0)
+    sp = spikes[['stop_frame','count']].rename(
+                columns={'stop_frame':'frame'}).pivot(columns='frame').fillna(0)
     df_spike = df_spike.add(-sp['count'], fill_value=0)
 
     # cumulate, conversion to int is not advised if using NaNs
@@ -346,7 +349,8 @@ def licks_to_timeseries(data, behavior):
     print('All entries', behavior.shape, end=' ')
     df_lick = behavior[behavior.loc[:,'stop_time']>behavior.loc[:,'start_time']].copy()
     print('Valid licks', df_lick.shape, end=' ')
-    df_lick['frame'] = (data.FPS*(df_lick['start_time']+df_lick['stop_time'])/2).apply(np.round).astype(int)
+    df_lick['frame'] = (data.FPS*(df_lick['start_time']+df_lick['stop_time'])/2
+                                ).apply(np.round).astype(int)
     #display(df_lick.head())
     #display(df_lick.tail())
 
@@ -354,14 +358,16 @@ def licks_to_timeseries(data, behavior):
     df_lick = df_lick[['lick_idx','frame']].reset_index()
     df_lick = df_lick.groupby(['time','frame']).count().unstack(fill_value=0)
     #display(df_lick.head())
-    df_lick = df_lick['lick_idx'].reindex(index=data.mirow.levels[0],columns=data.icol,fill_value=0)
+    df_lick = df_lick['lick_idx'].reindex(index=data.mirow.levels[0],
+                                          columns=data.icol,fill_value=0)
     #display(df_lick.head())
 
     # Number of remaining licks
     print('Remaining licks',df_lick.sum().sum())
     # Smoothen
     from scipy.ndimage.filters import gaussian_filter
-    df_lick = df_lick.apply(lambda x: gaussian_filter(x.astype(float)*data.FPS, sigma=0.25*data.FPS), axis=1, raw=True)
+    df_lick = df_lick.apply(lambda x: gaussian_filter(x.astype(float)*data.FPS,
+                                                      sigma=0.25*data.FPS), axis=1, raw=True)
     return df_lick
 
 
@@ -465,7 +471,8 @@ def peri_event_avg(data, triggers, diameter=(-10, 10), allow=None, disable=None)
     ret = []
     for idx, weight in triggers.iteritems():
         experiment_id, frame = idx
-        if (experiment_id in data.index) and ((allow is None) or (idx in allow)) and ((disable is None) or (idx not in disable)):
+        if ((experiment_id in data.index) and ((allow is None) or (idx in allow))
+            and ((disable is None) or (idx not in disable))):
             tmp = data.loc[experiment_id,:].reindex(columns=frame+window)
             tmp.columns = pd.MultiIndex.from_product([count,window],names=['id','frame'])
             ret.append(tmp)
@@ -504,7 +511,8 @@ def get_decay(time_range, rate):
 
 
 def rev_align(data, shape):
-    '''Align for broadcast to shape matching axes from the beginning (opposed to numpy convention)'''
+    '''Align for broadcast to shape matching axes from the beginning
+       (opposed to numpy convention)'''
     data_dim = data.ndim
     req_dim = len(shape)
     new_axes = np.arange(data_dim,req_dim)
@@ -560,7 +568,8 @@ def trigger_enable_pd(df, start, stop):
     triggers_start = pd.Series(1.0, index=mi, name='weight')
     mi = pd.MultiIndex.from_product((df.index.values, [stop]), names=['time', 'frame'])
     triggers_stop = pd.Series(1.0, index=mi, name='weight')
-    mi = pd.MultiIndex.from_product((df.index.values, list(range(start,stop))), names=['time', 'frame'])
+    mi = pd.MultiIndex.from_product((df.index.values, list(range(start,stop))),
+                                    names=['time', 'frame'])
     triggers_allow = pd.Series(1.0, index=mi, name='weight')
 
     return triggers_start, triggers_stop, triggers_allow
@@ -601,8 +610,10 @@ def rolling2D(df, func, window, min_periods=None, center=True):
         min_periods = int(min_periods)
     if min_periods<1:
         raise ValueError('min_periods needs to be positive')
-    start = min_periods-window # first point of first window is start, available points evaluate to [0, min_periods)
-    end = len(df)-min_periods # first point of last window is end, available points evaluate to [len-min_periods, len)
+    # first point of first window is start, available points evaluate to [0, min_periods)
+    start = min_periods-window
+    # first point of last window is end, available points evaluate to [len-min_periods, len)
+    end = len(df)-min_periods
     if center:
         shift = int(np.floor(window/2))
     else:
@@ -625,14 +636,16 @@ def rolling2D(df, func, window, min_periods=None, center=True):
     return ret
 
 
-def search_pattern(df, triggers, trials, FPS, diam = (-3,3), decay_time=0.1, trigger_allow=None, trigger_disable=None, method='correlate'):
+def search_pattern(df, triggers, trials, FPS, diam = (-3,3), decay_time=0.1,
+                   trigger_allow=None, trigger_disable=None, method='correlate'):
     '''deduce peri-event pattern based on triggers and search for similarities
        in the whole time series that is provided in (trial,roi) x (frames) format'''
     ret = []
     diam = int(FPS*diam[0]),int(FPS*diam[1])
     window = diam[1]-diam[0]
     decay = get_decay(window,1.0/(decay_time*FPS))
-    dd, c = peri_event_avg(df, triggers, diameter=diam, allow=trigger_allow, disable=trigger_disable)
+    dd, c = peri_event_avg(df, triggers, diameter=diam,
+                           allow=trigger_allow, disable=trigger_disable)
     p1 = dd.mean(axis=1, level=1).T.values
     s1 = dd.std(axis=1, level=1).T.values
     if method=='match':
@@ -742,7 +755,7 @@ def grp_activity(df, filter_columns=[], filter_conditions=None, grp = [],
             std = gb.std().reindex(columns=keep_columns)
         except AttributeError:
             ### Found the cause: non-float (e.g. bool) columns were grouped too
-            #C:\Program Files\Anaconda3\envs\py27\lib\site-packages\pandas\core\groupby.py in std(self, ddof)
+            #C:\Program Files\Anaconda3\lib\site-packages\pandas\core\groupby.py in std(self, ddof)
             #   979         # todo, implement at cython level?
             #-->980         return np.sqrt(self.var(ddof=ddof))
             #AttributeError: 'float' object has no attribute 'sqrt'
@@ -778,7 +791,8 @@ def plot_activity(ax, df, et, FPS, filter_columns=[], filter_conditions=None,
     # Only pass needed columns, otherwise groupy.std() might fail
     needed_columns = list(set(grp)|set(filter_columns))
     count, mean, std = grp_activity(df.join(et[needed_columns], how='left'), grp=grp,
-                                    filter_columns=filter_columns, filter_conditions=filter_conditions,
+                                    filter_columns=filter_columns,
+                                    filter_conditions=filter_conditions,
                                     keep_columns=df.columns, count_unique_columns='time')
     labels = ['%s: %d' % lab for lab in zip(mean.index,count)]
     count.index, mean.index, std.index = labels, labels, labels
@@ -860,15 +874,18 @@ def draw_transients(ax, transients, experiment_id, FPS, roi_df):
     ncolors = 10
     # Plot all neural units in this experiment
     try:
-        firing = transients.loc[experiment_id,['start_frame', 'stop_frame', 'max_frame']].join(roi_df.set_index(['roi_id']), how='left')
+        firing = transients.loc[experiment_id,['start_frame', 'stop_frame', 'max_frame']
+                                ].join(roi_df.set_index(['roi_id']), how='left')
         # Reshape things so that we have a sequence of:
         # [[(x0,y0),(x1,y1)],[(x0,y0),(x1,y1)],...]
-        # based on http://stackoverflow.com/questions/17240694/python-how-to-plot-one-line-in-different-colors
+        # based on:
+        # http://stackoverflow.com/questions/17240694/python-how-to-plot-one-line-in-different-colors
         segments = firing[['start_frame', 'idx', 'stop_frame', 'idx']].values.reshape(-1,2,2)
         coll = matplotlib.collections.LineCollection(segments, cmap=plt.cm.rainbow)
         coll.set_array(firing['idx']%ncolors)
         if len(firing):
-            #ax.plot(firing[['start_frame', 'stop_frame']].T,firing[['idx', 'idx']].T,c=colors[firing['idx']])
+            #ax.plot(firing[['start_frame', 'stop_frame']].T,
+            #        firing[['idx', 'idx']].T,c=colors[firing['idx']])
             ax.add_collection(coll)
             ax.autoscale_view()
         if len(firing):
@@ -888,7 +905,8 @@ def draw_levels(ax, data, experiment_id, FPS, roi_df, zoom=0.5, dist=1.0):
     '''Plot transients with colored line and put a tic at the maxima'''
     # Plot all neural units in this experiment
     try:
-        firing = (zoom*data.loc[experiment_id,:]).add(dist*roi_df.set_index(['roi_id']).loc[:,'idx'],axis=0)
+        firing = (zoom*data.loc[experiment_id,:]).add(
+                    dist*roi_df.set_index(['roi_id']).loc[:,'idx'],axis=0)
         if len(firing):
             ax.plot(firing.T)#,c=colors)
     except:
@@ -909,17 +927,21 @@ def draw_spiking_nan(ax, spiking, experiment_id, roi_df):
         firing = firing[firing.isnull()]
         firing = firing.reset_index()
         if len(firing):
-            #ax.scatter(firing.loc[:,'frame'],firing.loc[:,'idx'],s=1,c='lightgray',marker='.',label='missing')
-            ax.plot(firing.loc[:,'frame'],firing.loc[:,'idx'],'.',ms=1,c='lightgray',label='missing')
+            #ax.scatter(firing.loc[:,'frame'],firing.loc[:,'idx'],s=1,
+            #           c='lightgray',marker='.',label='missing')
+            ax.plot(firing.loc[:,'frame'],firing.loc[:,'idx'],'.',ms=1,
+                    c='lightgray',label='missing')
     except:
         pass
 
-def draw_conditions(ax, conditions, experiment_id, FPS, height=20, loc='lower center', screen_width=1.0, fontsize=24, cw=None):
+def draw_conditions(ax, conditions, experiment_id, FPS, height=20,
+                    loc='lower center', screen_width=1.0, fontsize=24, cw=None):
     '''Draw a table and write experimental conditions into it'''
     import matplotlib
-    a = conditions.loc[[experiment_id],['learning_epoch','context','port','puffed','session_num','day_num']]
+    a = conditions.loc[[experiment_id],sort_learning+['session_num','day_num']]
     if cw is None:
-        cw = np.concatenate((durations[:-1]*FPS,np.array([0.5,0.5])*(ax.get_xlim()[1]-events[-2]*FPS)))
+        cw = np.concatenate((durations[:-1]*FPS,
+                             np.array([0.5,0.5])*(ax.get_xlim()[1]-events[-2]*FPS)))
 
     c = a.copy()
     c.loc[:,:]='lightblue' if any(a['port'].isin(['W+',True])) else 'white'
@@ -934,7 +956,9 @@ def draw_conditions(ax, conditions, experiment_id, FPS, height=20, loc='lower ce
     #tab = pd.tools.plotting.table(ax, a, loc='lower center', fontsize=24, colWidths=cw/np.sum(cw))
     tab = matplotlib.table.table(ax, cellText=a.values,
                                    #rowLabels=rowLabels, colLabels=colLabels,
-                            loc=loc, fontsize=24, colWidths=cw/np.sum(cw), bbox=[0,0,screen_width,height/(ylim[1]-ylim[0])], cellLoc='center', cellColours=c.values)
+                            loc=loc, fontsize=24, colWidths=cw/np.sum(cw),
+                            bbox=[0,0,screen_width,height/(ylim[1]-ylim[0])],
+                            cellLoc='center', cellColours=c.values)
     # fontsize keyword is accepted but seems ineffective
     #tab.set_fontsize(fontsize)
     for key, cell in tab.get_celld().items():
@@ -971,7 +995,8 @@ def draw_behavior(ax, licks, experiment_id, FPS):
     except:
         pass
 
-def draw_licking(ax, licking, experiment_id, pos=-20, zoom=1.0, c='b', threshold=None, label=None):
+def draw_licking(ax, licking, experiment_id, pos=-20, zoom=1.0, c='b',
+                 threshold=None, label=None):
     '''Plot licking rate or any other single time series'''
     try:
         ax.axhline(y=pos, xmin=0.0, xmax = 1.0, linewidth=1, color='k')
@@ -988,7 +1013,8 @@ def draw_licking(ax, licking, experiment_id, pos=-20, zoom=1.0, c='b', threshold
     except:
         pass
 
-def draw_population(ax, data, experiment_id, pos=-20, zoom=10.0, c='r', threshold=None, label=None):
+def draw_population(ax, data, experiment_id, pos=-20, zoom=10.0, c='r',
+                    threshold=None, label=None):
     '''Plot population activity from individual signals'''
     try:
         ax.axhline(y=pos, xmin=0.0, xmax = 1.0, linewidth=1, color='k')
@@ -1025,12 +1051,15 @@ def show_peri_event1(ax, df, title=None, pos=-15, zoom=10.0, vmin=None, vmax=Non
 
 def show_peri_event2(ax, df_mean, df_std, title=None, pos=-15, zoom=10.0, vmin=None, vmax=None):
     import matlab_tools as mt
-    extent = np.min(df_mean.columns.values)-0.5, np.max(df_mean.columns.values)+0.5, -0.5, len(df_mean)+0.5
+    extent = (np.min(df_mean.columns.values)-0.5,
+              np.max(df_mean.columns.values)+0.5, -0.5, len(df_mean)+0.5)
     '''Plot mean and std using color and lightness-encoding'''
     ax.set_xlim(extent[0:2])
     ax.set_ylim((pos-zoom,extent[3]))
-    #img = mt.hls_matrix(mt.crop_series(0.4-0.5*df_mean.T.values,(0,0.8)),mt.crop_series(0.5-0.5*df_std.T.values,(0,1)),0.6)
-    img = mt.hls_matrix(mt.crop_series(0.2-0.25*df_mean.T.values,(0,0.8)),mt.crop_series(0.5-0.25*df_std.T.values,(0,1)),0.6)
+    #img = mt.hls_matrix(mt.crop_series(0.4-0.5*df_mean.T.values,(0,0.8)),
+    #                    mt.crop_series(0.5-0.5*df_std.T.values,(0,1)),0.6)
+    img = mt.hls_matrix(mt.crop_series(0.2-0.25*df_mean.T.values,(0,0.8)),
+                        mt.crop_series(0.5-0.25*df_std.T.values,(0,1)),0.6)
     ret = ax.imshow(img,interpolation='none',origin='lower',aspect='auto', extent=extent)
     ax.axhline(y=pos,xmin=0.0,xmax=1.0,c='gray')
     ax.axvline(x=0,ymin=0.0,ymax=1.0,c='gray')
@@ -1044,13 +1073,14 @@ def show_peri_event2(ax, df_mean, df_std, title=None, pos=-15, zoom=10.0, vmin=N
         ax.set_title(title)
     return ret
 
-def plot_peri_collection(collection, title=None, combine=True):
+def plot_peri_collection(collection, title=None, diameter=(-10,10), combine=True):
     '''Plot a colection of peri-event activities provided in a list'''
     max_cols = 10
     num_plots = len(collection) * (1 if combine else 2)
     num_rows = int(np.ceil(num_plots/float(max_cols)))
     num_cols = max_cols if num_rows>1 else num_plots
-    fig, ax = plt.subplots(num_rows, num_cols, figsize=(2*num_cols+2,12*num_rows), sharex=True, sharey=True, squeeze=False)
+    fig, ax = plt.subplots(num_rows, num_cols, figsize=(2*num_cols+2,12*num_rows),
+                           sharex=True, sharey=True, squeeze=False)
     ax = np.ravel(ax)
     fig.tight_layout(rect=(0,0,0.9,0.9), w_pad=2, h_pad=8)
     gradient = np.linspace(-1, 1, 256)
@@ -1071,16 +1101,19 @@ def plot_peri_collection(collection, title=None, combine=True):
 
     num_rois = 0
     for i, (df, index, trig, allow, disable, title) in enumerate(collection):
-        dd, c = peri_event_avg(df, trig, allow=allow, disable=disable)
+        dd, c = peri_event_avg(df, trig, diameter=diameter, allow=allow, disable=disable)
         if c:
             num_rois = np.max((num_rois, len(dd)))
             if index is not None:
                 dd = dd.reindex(index)
             if combine:
-                show_peri_event2(ax[i], dd.mean(axis=1, level=1), dd.std(axis=1, level=1), '%s: %d'%(title,c), vmin=-1, vmax=1)
+                show_peri_event2(ax[i], dd.mean(axis=1, level=1), dd.std(axis=1, level=1),
+                                 '%s: %d'%(title,c), vmin=-1, vmax=1)
             else:
-                show_peri_event1(ax[2*i], dd.mean(axis=1, level=1), '%s: %d'%(title,c), vmin=-1, vmax=1)
-                show_peri_event1(ax[2*i+1], dd.std(axis=1, level=1), 'Stdev', vmin=0, vmax=2)
+                show_peri_event1(ax[2*i], dd.mean(axis=1, level=1),
+                                 '%s: %d'%(title,c), vmin=-1, vmax=1)
+                show_peri_event1(ax[2*i+1], dd.std(axis=1, level=1),
+                                 'Stdev', vmin=0, vmax=2)
     ax[-1].set_ylim(ymax=num_rois)
     fig.sca(ax[-1])
 
