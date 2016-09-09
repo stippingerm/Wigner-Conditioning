@@ -224,6 +224,7 @@ def __format_experiment_traits(df):
     et['context'] = et['context'].replace('baseline','Baseline')
     et['port'] = et['port'].apply(lambda x: 'W+' if x else 'W-')
     et['puffed'] = et['puffed'].apply(lambda x: 'A+' if x else 'A-')
+    et['idx'] = list(range(0,len(et)))
     # Hack N°2: convert warming up session 'PRE' to numeric value
     et['session_num'] = et['session_num'].replace('PRE','-1')
     et['session_num'] = et['session_num'].astype(int)

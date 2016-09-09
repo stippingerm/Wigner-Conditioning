@@ -191,6 +191,7 @@ class BayesianNetwork(object):
 
         if len(self.X):
             self.X = np.row_stack((self.X,X))
+            self.extend() # TODO: implement how to extend model
         else:
             self.X = X
 
@@ -213,7 +214,7 @@ class BayesianNetwork(object):
     def reset(self):
         '''Reset inner state'''
         self.clear()
-        self.A = np.ndarray((0,0))
+        #self.A = np.ndarray((0,0))
         self.Z = np.ndarray((0,0))
 
     def __init__(self, decay_time = np.inf):
@@ -388,7 +389,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         '''Generate a model and corresponding data where the Bayesian network is
            established via rejection-sampling from the Indian Buffet Process.'''
         N, K, T = int(N), int(K), int(T)
-        assert (N>0) and (K>=0) and (T>0)
+        assert (N>0) and (K>=0) and (T>=0)
         # causes active
         Y = self.__gen_Y(K, T)
         # rejection-sample the network
@@ -588,6 +589,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         assert a in [0,1]
         # variables
         X = self.X
+        w = self.w
         Y = self.Y
         Z = self.Z
         # theta[k]^a(1-theta[k])^(1-a) -> (i,k)
@@ -602,8 +604,8 @@ class BernoulliBetaAssumption(BayesianNetwork):
         prob2 = 1 - np.power(1-self.lamb,conditional_scalar_prod) * (1-self.eps)
         # prob2 ^ w, to be multiplied along t -> (i,k,t)
         wprob2 = np.log(bernoulli.pmf(X[:,np.newaxis,:],p=prob2)) * (
-                    self.w[np.newaxis, np.newaxis, :])
-        #wprob2 = np.log(prob2) * self.w[...] was wrong in the paper
+                    w[np.newaxis, np.newaxis, :])
+        #wprob2 = np.log(prob2) * w[...] was wrong in the paper
         # prob1 * prod_t(P(X[i,:,t]|prob2)) -> (i,k)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
@@ -625,6 +627,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         '''Enumerate the log posterior: element of Y equals binary scalar a'''
         assert a in [0,1]
         X = self.X
+        w = self.w
         Y = self.Y
         Z = self.Z
         # p^a(1-p)^(1-a) -> ()
@@ -639,14 +642,14 @@ class BernoulliBetaAssumption(BayesianNetwork):
         prob2 = 1 - np.power(1-self.lamb,conditional_scalar_prod) * (1-self.eps)
         # prob2 ^ w, to be multiplied along i -> (i,k,t)
         wprob2 = np.log(bernoulli.pmf(X[:,np.newaxis,:],p=prob2)) * (
-                    self.w[np.newaxis, np.newaxis, :])
-        #wprob2 = np.log(prob2) * self.w[...] was wrong in the paper
+                    w[np.newaxis, np.newaxis, :])
+        #wprob2 = np.log(prob2) * w[...] was wrong in the paper
         # prob1 * prod_i(P(X[i,:,t]|prob2)) -> (k,t)
         ret = np.log(prob1) + np.sum(wprob2,axis=0)
         return ret
 
     # Eq. 12 modified for P(US|CS,...)
-    def logP_y_XZ(self, v, X=None, Z=None, w=None, given_i=slice(None)):
+    def logP_y_XZ(self, v, X=None, Z=None, given_i=slice(None)):
         '''Enumerate all Y considering only features in given_i and conditional
            on the same binary vector v used as columns of Y for all trials'''
         # In this function, only X has trial-specific details
@@ -656,7 +659,6 @@ class BernoulliBetaAssumption(BayesianNetwork):
         # zero-measure sets (therefore we rather implement this
         # function for P=0 weight cases)
          
-        X_self = X is None
         if X is None:
             X = self.X
         N, T = X.shape
@@ -664,14 +666,6 @@ class BernoulliBetaAssumption(BayesianNetwork):
             Z = self.Z
         N_, K = Z.shape
         assert N == N_
-
-        if w is None:
-            if X_self:
-                w = self.w
-            else:
-                w = self.amo.calc_logw(self.amo.calc_loga(X.shape[1]))
-        w = np.array(w, ndmin=1)
-        assert (w.ndim == 1) and ((len(w)==1) or len(w)==T)
 
         assert np.all((v==1)|(v==0))
         assert len(v) == K
@@ -699,6 +693,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         # K_new must be a vector containing sampled integer values
         p = self.p
         X = self.X
+        w = self.w
         Y = self.Y
         Z = self.Z
         # (1-lambda)^(Z[i,k]@Y[k,t]) -> (i,t)
@@ -709,7 +704,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         self.px = prob[0]
         # P[sample](x[i,t]==1|...) ^ w[:,:,t] -> (sample,i,t)
         wprob = np.log(bernoulli.pmf(X, p=prob)) * (
-                    self.w[np.newaxis, np.newaxis, :])
+                    w[np.newaxis, np.newaxis, :])
         # P(X[i,:]|...) in Eq. 14. -> (sample,i)
         ret = np.sum(wprob, axis=-1)
         return ret
@@ -780,7 +775,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         # use P(y[k,t]=a|X,Y,Z[(not k,t)]) -> (k,t)
         Py = p0_per_sum_p(logp=[self.logP_y_XYZ(1), self.logP_y_XYZ(0)])
         # sample y[k,t]
-        y = bernoulli.rvs(p=Py)
+        y = np.reshape(bernoulli.rvs(p=Py),Py.shape)
         # store
         self.Y = y
 
@@ -793,6 +788,7 @@ class BernoulliBetaAssumption(BayesianNetwork):
         keep = m>0
         # do not delete all columns, it won't work
         # FIXME: at some point Y still might get reduced to 1D
+        # I've found that distribution.rvs(np.array([[a]])) produces scalar!!!
         if ~np.any(keep):
             keep[0]=True
         # Z[i,k]
@@ -805,11 +801,15 @@ class BernoulliBetaAssumption(BayesianNetwork):
     # Algo 2
     def Gibbs_iterate(self):
         '''Iterate 1 cycle'''
-        self.__Gibbs_sample_Z()
-        #print ('N', self.N, 'K', self.K, 'T', self.T)
-        self.__Gibbs_sample_K()
-        #print ('N', self.N, 'K', self.K, 'T', self.T)
-        self.__Gibbs_sample_Y()
-        #print ('N', self.N, 'K', self.K, 'T', self.T)
-        self.__Gibbs_removal()
-        #print ('N', self.N, 'K', self.K, 'T', self.T)
+        try:
+            self.__Gibbs_sample_Z()
+            #print ('N', self.N, 'K', self.K, 'T', self.T)
+            self.__Gibbs_sample_K()
+            #print ('N', self.N, 'K', self.K, 'T', self.T)
+            self.__Gibbs_sample_Y()
+            #print ('N', self.N, 'K', self.K, 'T', self.T)
+            self.__Gibbs_removal()
+            #print ('N', self.N, 'K', self.K, 'T', self.T)
+        except:
+            print('\nX\n', self.X, '\nY\n', self.Y, '\nZ\n', self.Z)
+            raise
